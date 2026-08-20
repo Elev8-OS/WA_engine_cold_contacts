@@ -10,6 +10,43 @@ const STOP_WORDS = [
   'berhenti', 'abmelden',
 ];
 
+// Ein Ja ist alles, was in drei Zeichen passt - genau so sind die Nachrichten
+// geschrieben. Wer laenger antwortet, bekommt keine Automatik, sondern einen
+// Menschen: das ist eine offene Konversation und kein Formular.
+const YES_WORDS = [
+  'yes', 'y', 'yeah', 'yep', 'yup', 'ok', 'okay', 'sure', 'in', 'send', 'details',
+  'info', 'interested', '1', 'ya', 'iya', 'boleh', 'mau', 'ja',
+];
+
+const NO_WORDS = [
+  'no', 'nope', 'nah', '2', 'later', 'not now', 'maybe later', 'pass',
+  'tidak', 'nanti', 'belum', 'nein',
+];
+
+/** Antwort auf ein einzelnes Schlagwort pruefen, nicht auf einen ganzen Satz. */
+function matches(clean, words) {
+  const bare = clean.replace(/[.!,;:]+$/, '').trim();
+  return words.some((w) => bare === w || bare.startsWith(w + ' ') || bare.startsWith(w + ','));
+}
+
+const TAG = {
+  sent: 'cha08-sent',
+  yes: 'cha08-yes',
+  no: 'cha08-no',
+  replied: 'cha08-replied',
+  optedOut: 'cha08-opted-out',
+};
+
+/** Tag setzen, ohne den Ablauf zu stoppen, wenn GHL gerade klemmt. */
+async function tag(contactId, name) {
+  if (settings().dryRun) return;
+  try {
+    await addTags(contactId, [name]);
+  } catch (e) {
+    logEvent('warn', `Tag ${name} fuer ${contactId} fehlgeschlagen: ${e.message}`);
+  }
+}
+
 export function isPaused() {
   return getState('paused', config.ops.startPaused ? '1' : '0') === '1';
 }
@@ -122,6 +159,7 @@ async function sendTo(contact, step) {
       "UPDATE contacts SET status = 'sent', step = ?, last_sent_at = ? WHERE contact_id = ?"
     ).run(step, now, contact.contact_id);
     logEvent('info', `Gesendet an ${contact.contact_id} — Variante ${variant.id}, Step ${step}`);
+    await tag(contact.contact_id, TAG.sent);
     return true;
   } catch (e) {
     db.prepare(
@@ -177,7 +215,46 @@ export async function tick() {
   return { action: ok ? 'sent' : 'failed', contactId: due.contact.contact_id, nextGapSeconds: gap / 1000 };
 }
 
-/** Eingehende Nachricht verarbeiten — Antwort und Opt-out. */
+/**
+ * Antwort auf ein Ja: die Details, die in der Erstnachricht bewusst fehlten.
+ *
+ * Hier darf ein Link stehen - die Konversation ist eroeffnet, der Empfaenger
+ * hat darum gebeten. Genau deshalb enthaelt Step 1 keinen.
+ *
+ * Der Text ist eine normale Variante mit Step 3, im Editor zu bearbeiten wie
+ * jede andere.
+ */
+async function sendDetails(contact) {
+  const variant = pickVariant(3);
+  if (!variant) return false;
+
+  const body = render(variant.body, contact);
+  const now = Date.now();
+
+  if (settings().dryRun) {
+    logEvent('info', `DRY RUN — Details an ${contact.contact_id}: ${body.slice(0, 60)}`);
+    return true;
+  }
+
+  try {
+    const res = await sendSms({ contactId: contact.contact_id, message: body });
+    db.prepare(
+      `INSERT INTO sends (contact_id, variant_id, step, body, sent_at, message_id)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(contact.contact_id, variant.id, 3, body, now, res.messageId);
+    markVariantSent(variant.id);
+    return true;
+  } catch (e) {
+    db.prepare(
+      `INSERT INTO sends (contact_id, variant_id, step, body, sent_at, error)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(contact.contact_id, variant.id, 3, body, now, String(e.message).slice(0, 500));
+    logEvent('error', `Details an ${contact.contact_id} fehlgeschlagen: ${e.message}`);
+    return false;
+  }
+}
+
+/** Eingehende Nachricht verarbeiten — Antwort, Ja, Nein und Opt-out. */
 export async function handleInbound({ contactId, text }) {
   const contact = db.prepare('SELECT * FROM contacts WHERE contact_id = ?').get(contactId);
   if (!contact) return { known: false };
@@ -195,32 +272,36 @@ export async function handleInbound({ contactId, text }) {
     markVariantReplied(lastSend.variant_id);
   }
 
-  const dryRun = settings().dryRun;
-
   if (isStop) {
     db.prepare(
       "UPDATE contacts SET status = 'opted_out', opted_out_at = ?, replied_at = COALESCE(replied_at, ?) WHERE contact_id = ?"
     ).run(now, now, contactId);
     logEvent('info', `Opt-out von ${contactId}: "${clean.slice(0, 40)}"`);
-    if (!dryRun) {
-      try {
-        await addTags(contactId, ['cha08-opted-out']);
-      } catch (e) {
-        logEvent('warn', `Tag cha08-opted-out fehlgeschlagen: ${e.message}`);
-      }
-    }
+    await tag(contactId, TAG.optedOut);
     return { known: true, optedOut: true };
   }
 
   db.prepare("UPDATE contacts SET status = 'replied', replied_at = ? WHERE contact_id = ?").run(now, contactId);
   logEvent('info', `Antwort von ${contactId} — kein Follow-up mehr, Konversation ist offen`);
-  if (!dryRun) {
-    try {
-      await addTags(contactId, ['cha08-replied']);
-    } catch (e) {
-      logEvent('warn', `Tag cha08-replied fehlgeschlagen: ${e.message}`);
-    }
+  await tag(contactId, TAG.replied);
+
+  // Ein klares Nein: markieren und schweigen. Kein "schade", kein Nachfassen -
+  // das ist der Unterschied zwischen respektiert und belaestigt.
+  if (matches(clean, NO_WORDS)) {
+    await tag(contactId, TAG.no);
+    logEvent('info', `Nein von ${contactId}`);
+    return { known: true, replied: true, answer: 'no' };
   }
+
+  // Ein klares Ja: Tag setzen und die Details schicken. Fehlt die Step-3-
+  // Variante, antwortet ein Mensch - besser als eine leere SMS.
+  if (matches(clean, YES_WORDS)) {
+    await tag(contactId, TAG.yes);
+    const sent = await sendDetails(contact);
+    logEvent('info', `Ja von ${contactId}${sent ? ' — Details verschickt' : ' — keine Step-3-Variante hinterlegt'}`);
+    return { known: true, replied: true, answer: 'yes', detailsSent: sent };
+  }
+
   return { known: true, replied: true };
 }
 
