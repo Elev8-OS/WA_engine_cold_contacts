@@ -2,13 +2,16 @@ import express from 'express';
 import { config } from './config.js';
 import { db, logEvent } from './db.js';
 import { handleInbound, stats, pause, resume } from './campaign.js';
-import { poolStats, upsertVariants } from './pool.js';
+import { poolStats, upsertVariants, listVariants, deleteVariant } from './pool.js';
+import { settings, settingsDetail, setSettings, resetSetting } from './settings.js';
 import {
   getAudience,
   setAudience,
   availableSmartLists,
+  availableTags,
   syncAudience,
   probe,
+  discoverSmartLists,
 } from './audience.js';
 
 export function createServer() {
@@ -124,9 +127,25 @@ export function createServer() {
     }
   });
 
+  app.get('/api/audience/tags', requireAdmin, async (_req, res) => {
+    try {
+      res.json({ tags: await availableTags() });
+    } catch (e) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
   app.get('/api/audience/probe', requireAdmin, async (_req, res) => {
     try {
       res.json(await probe());
+    } catch (e) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/audience/discover', requireAdmin, async (_req, res) => {
+    try {
+      res.json(await discoverSmartLists());
     } catch (e) {
       res.status(502).json({ error: e.message });
     }
@@ -154,13 +173,48 @@ export function createServer() {
     }
   });
 
-  // ── Dashboard ────────────────────────────────────────────────────────────
+  // ── Einstellungen ─────────────────────────────────────────────────────────
+  app.get('/api/settings', (_req, res) => {
+    res.json({ values: settings(), detail: settingsDetail() });
+  });
+
+  app.post('/admin/settings', requireAdmin, (req, res) => {
+    try {
+      res.json({ values: setSettings(req.body || {}), detail: settingsDetail() });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.post('/admin/settings/reset', requireAdmin, (req, res) => {
+    try {
+      res.json({ values: resetSetting(req.body?.key), detail: settingsDetail() });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // ── Nachrichten-Pool ───────────────────────────────────────────────────────
+  app.get('/api/pool', requireAdmin, (_req, res) => res.json({ variants: listVariants() }));
+
+  app.delete('/admin/pool/:id', requireAdmin, (req, res) => {
+    const gone = deleteVariant(req.params.id);
+    if (!gone) return res.status(404).json({ error: 'Variante nicht gefunden' });
+    logEvent('info', `Variante ${req.params.id} gelöscht`);
+    res.json({ deleted: req.params.id });
+  });
+
+  // ── Seiten ────────────────────────────────────────────────────────────────
   app.get('/', (_req, res) => {
     res.type('html').send(dashboardHtml());
   });
 
   app.get('/audience', (_req, res) => {
     res.type('html').send(audiencePageHtml());
+  });
+
+  app.get('/settings', (_req, res) => {
+    res.type('html').send(settingsPageHtml());
   });
 
   return app;
@@ -193,6 +247,226 @@ const PAGE_CSS = `
   .kv { font-size:13px; } .kv b { color:#8b8b93; font-weight:500; }
 `;
 
+function settingsPageHtml() {
+  return `<!doctype html>
+<html lang="de"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Einstellungen</title>
+<style>${PAGE_CSS}
+  .var { border:1px solid #24242a; border-radius:10px; padding:14px; margin-bottom:12px; background:#0f0f11; }
+  .var .head { display:grid; grid-template-columns:1.2fr .5fr 1.6fr auto; gap:10px; align-items:end; }
+  textarea { width:100%; min-height:88px; padding:9px 11px; background:#0f0f11; color:#e7e7e9;
+             border:1px solid #2c2c34; border-radius:8px; font-size:13px; resize:vertical;
+             font-family:inherit; line-height:1.5; }
+  .meta { display:flex; gap:16px; align-items:center; font-size:11px; color:#6b6b73; margin-top:6px; }
+  .chk { display:flex; align-items:center; gap:7px; font-size:12px; color:#a9a9b2; padding-bottom:9px; }
+  .chk input { width:auto; }
+  .grp { margin:0 0 6px; }
+  .field { display:grid; grid-template-columns:1fr 150px auto; gap:12px; align-items:center;
+           padding:10px 0; border-top:1px solid #202027; }
+  .field:first-of-type { border-top:0; }
+  .field .lbl { font-size:13px; }
+  .field .hint { font-size:11px; color:#6b6b73; margin-top:2px; }
+  .field .src { font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+  .del { border-color:#ef444455; background:#ef444414; color:#f87171; }
+  .bar2 { position:sticky; bottom:0; background:#0b0b0cf2; padding:14px 0 4px;
+          border-top:1px solid #24242a; margin-top:8px; }
+</style></head><body>
+
+<h1>Einstellungen</h1>
+<div class="sub"><a href="/">&larr; Dashboard</a> &middot; <a href="/audience">Zielgruppe</a></div>
+
+<div class="card">
+  <h2>Admin-Key</h2>
+  <input id="key" type="password" placeholder="ADMIN_KEY" autocomplete="off">
+  <div class="sub" style="margin:6px 0 0">Wird nur in diesem Tab gehalten. Danach „Laden" klicken.</div>
+  <button id="load">Laden</button>
+  <pre id="out" hidden></pre>
+</div>
+
+<div class="card">
+  <h2>Nachrichten</h2>
+  <div class="sub" style="margin:0 0 12px">
+    Step 1 = Erstnachricht, Step 2 = Follow-up. <code>{{first_name}}</code> wird pro Kontakt
+    eingesetzt, ohne Vornamen fällt es auf <code>there</code> zurück. Inaktive Varianten
+    bleiben stehen, werden aber nicht gezogen.
+  </div>
+  <div id="vars"></div>
+  <button id="add" class="ghost">+ Variante</button>
+  <div class="bar2"><button id="saveVars">Nachrichten speichern</button></div>
+</div>
+
+<div class="card">
+  <h2>Tempo, Follow-up und Bremsen</h2>
+  <div class="sub" style="margin:0 0 12px">
+    Gilt sofort, ohne Redeploy. <b>DB</b> heisst hier gesetzt, <b>ENV</b> heisst noch der
+    Startwert aus den Railway-Variablen.
+  </div>
+  <div id="fields"></div>
+  <div class="bar2"><button id="saveSet">Einstellungen speichern</button></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const out = $('out');
+const show = (v) => { out.hidden = false; out.textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); };
+const key = () => $('key').value.trim();
+const need = () => { if (!key()) { show('Bitte zuerst den ADMIN_KEY eintragen.'); return false; } return true; };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function call(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { 'x-admin-key': key(), 'content-type': 'application/json', ...(opts.headers || {}) },
+  });
+  const body = await res.json().catch(() => ({ error: 'keine JSON-Antwort' }));
+  if (!res.ok) throw new Error(body.error || JSON.stringify(body));
+  return body;
+}
+
+let newCount = 0;
+
+function varRow(v) {
+  const d = document.createElement('div');
+  d.className = 'var';
+  d.dataset.original = v.id;
+  d.innerHTML =
+    '<div class="head">' +
+      '<div><label>ID</label><input class="v-id" value="' + esc(v.id) + '"></div>' +
+      '<div><label>Step</label><input class="v-step" type="number" min="1" max="5" value="' + v.step + '"></div>' +
+      '<div><label>Label</label><input class="v-label" value="' + esc(v.label || '') + '"></div>' +
+      '<div class="chk"><input class="v-active" type="checkbox" ' + (v.active ? 'checked' : '') + '> aktiv</div>' +
+    '</div>' +
+    '<label>Text</label>' +
+    '<textarea class="v-body">' + esc(v.body || '') + '</textarea>' +
+    '<div class="meta">' +
+      '<span class="cnt"></span>' +
+      '<span>gesendet ' + (v.sent_count || 0) + ' · Antworten ' + (v.reply_count || 0) + '</span>' +
+      '<span style="flex:1"></span>' +
+      '<button class="del" style="margin:0">Löschen</button>' +
+    '</div>';
+
+  const body = d.querySelector('.v-body');
+  const cnt = d.querySelector('.cnt');
+  const upd = () => {
+    const n = body.value.length;
+    const segs = Math.max(1, Math.ceil(n / 160));
+    cnt.textContent = n + ' Zeichen · ' + segs + ' SMS-Segment' + (segs > 1 ? 'e' : '');
+    cnt.style.color = segs > 2 ? '#f6bb12' : '#6b6b73';
+  };
+  body.oninput = upd; upd();
+
+  d.querySelector('.del').onclick = async () => {
+    const id = d.dataset.original;
+    if (!id.startsWith('__new')) {
+      if (!need()) return;
+      try { await call('/admin/pool/' + encodeURIComponent(id), { method: 'DELETE' }); }
+      catch (e) { return show('Fehler: ' + e.message); }
+    }
+    d.remove();
+    show('Variante entfernt.');
+  };
+  return d;
+}
+
+async function loadAll() {
+  if (!need()) return;
+  show('lade …');
+  try {
+    const [{ variants }, { detail }] = await Promise.all([call('/api/pool'), call('/api/settings')]);
+
+    const box = $('vars');
+    box.innerHTML = '';
+    variants.forEach(v => box.appendChild(varRow(v)));
+
+    const fields = $('fields');
+    fields.innerHTML = '';
+    let group = null;
+    for (const f of detail) {
+      if (f.group !== group) {
+        group = f.group;
+        const h = document.createElement('div');
+        h.className = 'grp';
+        h.innerHTML = '<h2 style="margin:16px 0 2px">' + esc(group) + '</h2>';
+        fields.appendChild(h);
+      }
+      const row = document.createElement('div');
+      row.className = 'field';
+      const input = f.type === 'bool'
+        ? '<input type="checkbox" class="s-val" ' + (f.value ? 'checked' : '') + '>'
+        : '<input class="s-val" value="' + esc(f.value) + '"' +
+          (f.type === 'int' || f.type === 'float' ? ' type="number" step="' + (f.type === 'int' ? '1' : '0.01') + '"' : '') +
+          (f.min !== undefined ? ' min="' + f.min + '"' : '') +
+          (f.max !== undefined ? ' max="' + f.max + '"' : '') + '>';
+      row.innerHTML =
+        '<div><div class="lbl">' + esc(f.label) + '</div>' +
+        (f.hint ? '<div class="hint">' + esc(f.hint) + '</div>' : '') + '</div>' +
+        '<div>' + input + '</div>' +
+        '<div><span class="src ' + (f.source === 'db' ? 'ok' : 'dim') + '">' + f.source.toUpperCase() + '</span>' +
+        (f.source === 'db' ? ' <a href="#" class="rst" style="font-size:11px">zurücksetzen</a>' : '') + '</div>';
+      row.dataset.key = f.key;
+      row.dataset.type = f.type;
+      const rst = row.querySelector('.rst');
+      if (rst) rst.onclick = async (e) => {
+        e.preventDefault();
+        try { await call('/admin/settings/reset', { method: 'POST', body: JSON.stringify({ key: f.key }) }); await loadAll(); show('Auf Startwert zurückgesetzt: ' + f.key); }
+        catch (err) { show('Fehler: ' + err.message); }
+      };
+      fields.appendChild(row);
+    }
+    show(variants.length + ' Varianten und ' + detail.length + ' Einstellungen geladen.');
+  } catch (e) { show('Fehler: ' + e.message); }
+}
+
+$('load').onclick = loadAll;
+
+$('add').onclick = () => {
+  newCount++;
+  $('vars').appendChild(varRow({ id: '__new' + newCount, step: 1, label: '', body: '', active: true }));
+};
+
+$('saveVars').onclick = async () => {
+  if (!need()) return;
+  const rows = [...document.querySelectorAll('.var')];
+  const list = [];
+  for (const d of rows) {
+    const id = d.querySelector('.v-id').value.trim();
+    const bodyText = d.querySelector('.v-body').value.trim();
+    if (!id || id.startsWith('__new')) { show('Jede Variante braucht eine eigene ID (z. B. s1-invite).'); return; }
+    if (!bodyText) { show('Variante ' + id + ' hat keinen Text.'); return; }
+    list.push({
+      id,
+      step: parseInt(d.querySelector('.v-step').value, 10) || 1,
+      label: d.querySelector('.v-label').value.trim(),
+      body: bodyText,
+      active: d.querySelector('.v-active').checked,
+    });
+  }
+  const ids = list.map(v => v.id);
+  const dupe = ids.find((v, i) => ids.indexOf(v) !== i);
+  if (dupe) { show('ID doppelt: ' + dupe); return; }
+  show('speichere …');
+  try { const r = await call('/admin/pool', { method: 'POST', body: JSON.stringify(list) }); await loadAll(); show(r.upserted + ' Varianten gespeichert.'); }
+  catch (e) { show('Fehler: ' + e.message); }
+};
+
+$('saveSet').onclick = async () => {
+  if (!need()) return;
+  const patch = {};
+  for (const row of document.querySelectorAll('.field')) {
+    const el = row.querySelector('.s-val');
+    if (!el) continue;
+    patch[row.dataset.key] = row.dataset.type === 'bool' ? el.checked : el.value;
+  }
+  show('speichere …');
+  try { await call('/admin/settings', { method: 'POST', body: JSON.stringify(patch) }); await loadAll(); show('Einstellungen gespeichert — gilt ab sofort.'); }
+  catch (e) { show('Fehler: ' + e.message); }
+};
+</script>
+</body></html>`;
+}
+
 function audiencePageHtml() {
   const a = getAudience();
   const esc = (v) =>
@@ -208,7 +482,7 @@ function audiencePageHtml() {
 <style>${PAGE_CSS}</style></head><body>
 
 <h1>Zielgruppe</h1>
-<div class="sub"><a href="/">&larr; zurück zum Dashboard</a></div>
+<div class="sub"><a href="/">&larr; Dashboard</a> &middot; <a href="/settings">Einstellungen</a></div>
 
 <div class="card">
   <h2>Aktuell</h2>
@@ -228,8 +502,8 @@ function audiencePageHtml() {
     <div>
       <label>Typ</label>
       <select id="type">
-        <option value="smartlist"${a.type === 'smartlist' ? ' selected' : ''}>Smart List</option>
-        <option value="tag"${a.type === 'tag' ? ' selected' : ''}>Tag</option>
+        <option value="tag"${a.type === 'tag' ? ' selected' : ''}>Tag (funktioniert)</option>
+        <option value="smartlist"${a.type === 'smartlist' ? ' selected' : ''}>Smart List (nur falls API sie hergibt)</option>
         <option value="manual"${a.type === 'manual' ? ' selected' : ''}>Manuell (CSV / API)</option>
       </select>
     </div>
@@ -238,14 +512,38 @@ function audiencePageHtml() {
       <select id="smartlist"><option value="">— Liste laden —</option></select>
     </div>
   </div>
-  <label>Tag-Name (nur bei Typ „Tag")</label>
-  <input id="tag" placeholder="z. B. cha08-invite" value="${a.type === 'tag' ? esc(a.id) : ''}">
+  <div class="row">
+    <div>
+      <label>Tag aus GHL</label>
+      <select id="tagsel"><option value="">— Tags laden —</option></select>
+    </div>
+    <div>
+      <label>oder Tag-Name tippen</label>
+      <input id="tag" placeholder="z. B. cha08-invite" value="${a.type === 'tag' ? esc(a.id) : ''}">
+    </div>
+  </div>
 
+  <button id="loadTags" class="ghost">Tags laden</button>
   <button id="load" class="ghost">Smart Lists laden</button>
   <button id="save">Speichern &amp; synchronisieren</button>
   <button id="sync" class="ghost">Nur synchronisieren</button>
   <button id="probe" class="ghost">API prüfen</button>
+  <button id="discover" class="ghost">Smart-List-Endpoints scannen</button>
   <pre id="out" hidden></pre>
+</div>
+
+<div class="card">
+  <h2>Warum Tag statt Smart List</h2>
+  <div class="sub" style="margin:0">
+    HighLevel hat für Smart Lists keinen öffentlichen API-Endpoint — „API prüfen"
+    zeigt dir das für deine Location, „Smart-List-Endpoints scannen" probiert alle
+    plausiblen Pfade durch und zeigt jeden Statuscode.<br><br>
+    Der Weg, der sauber funktioniert: in GHL die Smart List öffnen, alle auswählen,
+    Bulk Action <b>Add Tag</b>, z. B. <code>cha08-invite</code>. Dann hier den Tag wählen.
+    Damit die Liste dynamisch bleibt, statt einmalig zu taggen: in GHL einen Workflow mit
+    denselben Bedingungen wie die Smart List anlegen, Action <b>Add Tag</b> — dann wird
+    jeder neue Kontakt automatisch getaggt und landet beim nächsten Sync in der Warteschlange.
+  </div>
 </div>
 
 <script>
@@ -281,6 +579,31 @@ $('load').onclick = async () => {
     }
     show(smartLists.length ? smartLists.length + ' Smart Lists geladen.' : 'Keine Smart Lists gefunden — "API prüfen" klicken.');
   } catch (e) { show('Fehler: ' + e.message); }
+};
+
+$('loadTags').onclick = async () => {
+  if (!need()) return;
+  show('lade Tags …');
+  try {
+    const { tags } = await call('/api/audience/tags');
+    const sel = $('tagsel');
+    sel.innerHTML = '<option value="">— auswählen —</option>';
+    for (const t of tags) {
+      const o = document.createElement('option');
+      o.value = t.name;
+      o.textContent = t.name;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => { if (sel.value) $('tag').value = sel.value; };
+    show(tags.length ? tags.length + ' Tags geladen. Auswahl füllt das Feld rechts.' : 'Keine Tags in dieser Location gefunden.');
+  } catch (e) { show('Fehler: ' + e.message); }
+};
+
+$('discover').onclick = async () => {
+  if (!need()) return;
+  show('scanne mögliche Smart-List-Endpoints … das dauert ein paar Sekunden.');
+  try { show(await call('/api/audience/discover')); }
+  catch (e) { show('Fehler: ' + e.message); }
 };
 
 $('save').onclick = async () => {
@@ -331,7 +654,7 @@ function dashboardHtml() {
   const time = (ts) =>
     ts
       ? new Intl.DateTimeFormat('en-GB', {
-          timeZone: config.pace.timezone,
+          timeZone: settings().timezone,
           day: '2-digit',
           month: '2-digit',
           hour: '2-digit',
@@ -380,13 +703,21 @@ function dashboardHtml() {
             padding:10px 14px; border-radius:10px; margin-bottom:18px; font-size:13px; }
   .bar { height:5px; background:#24242a; border-radius:99px; overflow:hidden; margin-top:7px; }
   .bar > i { display:block; height:100%; background:#f6bb12; }
+  a { color:#f6bb12; }
 </style></head><body>
 
 <h1>SMS Rotator <span class="pill">${statusLabel}</span></h1>
 <div class="sub">Lokalzeit ${esc(s.localTime)} · Sendefenster ${esc(s.sendWindow)}${
     s.dryRun ? ' · <b class="warn">DRY RUN</b>' : ''
-  } &middot; <a href="/audience" style="color:#f6bb12">Zielgruppe</a></div>
+  } &middot; Abstand ${esc(s.gapSeconds)} s${
+    s.campaignEndsAt ? ` &middot; Ende ${esc(s.campaignEndsAt)}` : ''
+  }<br><a href="/audience">Zielgruppe</a> &middot; <a href="/settings">Einstellungen</a></div>
 
+${
+  s.campaignEnded
+    ? `<div class="banner"><b>Kampagne beendet:</b> Enddatum ${esc(s.campaignEndsAt)} ist erreicht. Es wird nichts mehr gesendet.</div>`
+    : ''
+}
 ${s.paused && s.pauseReason ? `<div class="banner"><b>Pausiert:</b> ${esc(s.pauseReason)}</div>` : ''}
 
 <div class="grid">
