@@ -1,26 +1,34 @@
-import { config } from './config.js';
+import { settings } from './settings.js';
 
-const tz = config.pace.timezone;
+// Formatter pro Zeitzone cachen — die Zeitzone ist zur Laufzeit änderbar.
+const formatters = new Map();
 
-const partsFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: tz,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});
+function formatter(tz) {
+  let f = formatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    formatters.set(tz, f);
+  }
+  return f;
+}
 
-function parts(ts = Date.now()) {
+function parts(ts = Date.now(), tz = settings().timezone) {
   const out = {};
-  for (const p of partsFormatter.formatToParts(new Date(ts))) {
+  for (const p of formatter(tz).formatToParts(new Date(ts))) {
     if (p.type !== 'literal') out[p.type] = p.value;
   }
   return out;
 }
 
-/** Lokaler Kalendertag als YYYY-MM-DD — Basis für den Tages-Cap. */
+/** Lokaler Kalendertag als YYYY-MM-DD — Basis für Tages-Cap und Enddatum. */
 export function localDay(ts = Date.now()) {
   const p = parts(ts);
   return `${p.year}-${p.month}-${p.day}`;
@@ -37,12 +45,13 @@ export function localTimeLabel(ts = Date.now()) {
 }
 
 export function insideSendWindow(ts = Date.now()) {
+  const s = settings();
   const h = localHour(ts);
-  return h >= config.pace.windowStart && h < config.pace.windowEnd;
+  return h >= s.windowStart && h < s.windowEnd;
 }
 
 export function randomGapMs() {
-  const { minGapSeconds, maxGapSeconds } = config.pace;
+  const { minGapSeconds, maxGapSeconds } = settings();
   const span = Math.max(0, maxGapSeconds - minGapSeconds);
   return (minGapSeconds + Math.floor(Math.random() * (span + 1))) * 1000;
 }

@@ -71,6 +71,19 @@ export function upsertVariants(list) {
   return list.length;
 }
 
+/** Varianten inklusive Text — für den Editor. */
+export function listVariants() {
+  return db
+    .prepare('SELECT id, step, label, body, active, sent_count, reply_count FROM variants ORDER BY step ASC, id ASC')
+    .all()
+    .map((v) => ({ ...v, active: v.active === 1 }));
+}
+
+export function deleteVariant(id) {
+  const info = db.prepare('DELETE FROM variants WHERE id = ?').run(id);
+  return info.changes > 0;
+}
+
 export function poolStats() {
   return db
     .prepare(
