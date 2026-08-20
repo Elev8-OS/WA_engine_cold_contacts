@@ -4,6 +4,7 @@ import { db, logEvent } from './db.js';
 import { handleInbound, stats, pause, resume } from './campaign.js';
 import { poolStats, upsertVariants, listVariants, deleteVariant } from './pool.js';
 import { settings, settingsDetail, setSettings, resetSetting } from './settings.js';
+import { getBrief, generateVariants } from './generate.js';
 import {
   getAudience,
   setAudience,
@@ -27,8 +28,8 @@ export function createServer() {
   };
 
   // ── Inbound-Webhook aus GHL ──────────────────────────────────────────────────
-  // GHL: Settings → Webhooks bzw. Workflow-Trigger "Customer Replied"
-  //      → Webhook auf POST https://<app>/webhooks/ghl/inbound
+  // GHL: Automation → Workflow mit Trigger "Customer Replied"
+  //      → Action Webhook auf POST https://<app>/webhooks/ghl/inbound
   app.post('/webhooks/ghl/inbound', async (req, res) => {
     const p = req.body || {};
     const contactId = p.contactId || p.contact_id || p.contact?.id;
@@ -194,6 +195,25 @@ export function createServer() {
     }
   });
 
+  // ── Varianten-Generator ────────────────────────────────────────────────────
+  app.get('/api/brief', requireAdmin, (_req, res) => res.json(getBrief()));
+
+  app.post('/admin/generate', requireAdmin, async (req, res) => {
+    try {
+      const result = await generateVariants({
+        brief: req.body?.brief,
+        language: req.body?.language,
+        countStep1: req.body?.countStep1,
+        countStep2: req.body?.countStep2,
+        existingIds: listVariants().map((v) => v.id),
+      });
+      res.json(result);
+    } catch (e) {
+      logEvent('warn', `Generator: ${e.message}`);
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   // ── Nachrichten-Pool ───────────────────────────────────────────────────────
   app.get('/api/pool', requireAdmin, (_req, res) => res.json({ variants: listVariants() }));
 
@@ -241,10 +261,13 @@ const PAGE_CSS = `
   button.ghost { border-color:#2c2c34; background:#18181b; color:#a9a9b2; }
   button:disabled { opacity:.45; cursor:default; }
   pre { background:#0f0f11; border:1px solid #24242a; border-radius:8px; padding:12px;
-        overflow:auto; font-size:12px; color:#a9a9b2; margin:14px 0 0; max-height:340px; }
+        overflow:auto; font-size:12px; color:#a9a9b2; margin:14px 0 0; max-height:340px;
+        white-space:pre-wrap; }
   .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   .dim { color:#6b6b73; } .ok { color:#22c55e; } .bad { color:#ef4444; } .warn { color:#f6bb12; }
   .kv { font-size:13px; } .kv b { color:#8b8b93; font-weight:500; }
+  code { background:#0f0f11; border:1px solid #24242a; border-radius:4px; padding:1px 5px;
+         font-size:12px; }
 `;
 
 function settingsPageHtml() {
@@ -259,6 +282,7 @@ function settingsPageHtml() {
   textarea { width:100%; min-height:88px; padding:9px 11px; background:#0f0f11; color:#e7e7e9;
              border:1px solid #2c2c34; border-radius:8px; font-size:13px; resize:vertical;
              font-family:inherit; line-height:1.5; }
+  #brief { min-height:120px; }
   .meta { display:flex; gap:16px; align-items:center; font-size:11px; color:#6b6b73; margin-top:6px; }
   .chk { display:flex; align-items:center; gap:7px; font-size:12px; color:#a9a9b2; padding-bottom:9px; }
   .chk input { width:auto; }
@@ -283,6 +307,25 @@ function settingsPageHtml() {
   <div class="sub" style="margin:6px 0 0">Wird nur in diesem Tab gehalten. Danach „Laden" klicken.</div>
   <button id="load">Laden</button>
   <pre id="out" hidden></pre>
+</div>
+
+<div class="card">
+  <h2>Kampagne beschreiben</h2>
+  <div class="sub" style="margin:0 0 4px">
+    Thema, Datum, Ort, Zielgruppe, was du erreichen willst. Je konkreter, desto
+    brauchbarer die Varianten. Das Ergebnis landet unten als Vorschlag im Editor —
+    gespeichert wird nichts, bis du auf „Nachrichten speichern" klickst.
+  </div>
+  <textarea id="brief" placeholder="Beispiel: CHA-08 am 12. September, 18 Uhr, im Alchemy Canggu. Zielgruppe sind Villa-Owner und Manager, die ich am Bali Villa Connect getroffen habe. Thema: echte Occupancy- und ADR-Zahlen aus 40+ Bali-Villen und was die besten 10 Prozent anders machen. 25 Plätze, gratis. Ziel: sie sollen antworten, damit ich ihnen den Anmeldelink schicken kann."></textarea>
+  <div class="row" style="margin-top:12px">
+    <div><label>Sprache</label><input id="lang" value="Englisch"></div>
+    <div class="row">
+      <div><label>Varianten Step 1</label><input id="n1" type="number" min="1" max="8" value="4"></div>
+      <div><label>Step 2</label><input id="n2" type="number" min="0" max="8" value="3"></div>
+    </div>
+  </div>
+  <button id="gen">Varianten schreiben</button>
+  <span id="genstate" class="dim" style="font-size:12px; margin-left:8px"></span>
 </div>
 
 <div class="card">
@@ -343,6 +386,7 @@ function varRow(v) {
     '<div class="meta">' +
       '<span class="cnt"></span>' +
       '<span>gesendet ' + (v.sent_count || 0) + ' · Antworten ' + (v.reply_count || 0) + '</span>' +
+      (v.generated ? '<span class="warn">neu generiert</span>' : '') +
       '<span style="flex:1"></span>' +
       '<button class="del" style="margin:0">Löschen</button>' +
     '</div>';
@@ -359,7 +403,7 @@ function varRow(v) {
 
   d.querySelector('.del').onclick = async () => {
     const id = d.dataset.original;
-    if (!id.startsWith('__new')) {
+    if (!id.startsWith('__new') && !v.generated) {
       if (!need()) return;
       try { await call('/admin/pool/' + encodeURIComponent(id), { method: 'DELETE' }); }
       catch (e) { return show('Fehler: ' + e.message); }
@@ -374,7 +418,20 @@ async function loadAll() {
   if (!need()) return;
   show('lade …');
   try {
-    const [{ variants }, { detail }] = await Promise.all([call('/api/pool'), call('/api/settings')]);
+    const [{ variants }, { detail }, brief] = await Promise.all([
+      call('/api/pool'), call('/api/settings'), call('/api/brief'),
+    ]);
+
+    if (brief.brief) $('brief').value = brief.brief;
+    if (brief.language) $('lang').value = brief.language;
+    $('n1').value = brief.countStep1;
+    $('n2').value = brief.countStep2;
+    $('genstate').textContent = !brief.enabled
+      ? 'Generator aus — ANTHROPIC_API_KEY in Railway setzen.'
+      : brief.lastGeneratedAt
+        ? 'Zuletzt generiert mit ' + brief.lastModel
+        : '';
+    $('gen').disabled = !brief.enabled;
 
     const box = $('vars');
     box.innerHTML = '';
@@ -424,6 +481,39 @@ $('load').onclick = loadAll;
 $('add').onclick = () => {
   newCount++;
   $('vars').appendChild(varRow({ id: '__new' + newCount, step: 1, label: '', body: '', active: true }));
+};
+
+$('gen').onclick = async () => {
+  if (!need()) return;
+  const btn = $('gen');
+  btn.disabled = true;
+  const before = btn.textContent;
+  btn.textContent = 'schreibt …';
+  show('Das Modell schreibt die Varianten. Dauert 15 bis 40 Sekunden.');
+  try {
+    const r = await call('/admin/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        brief: $('brief').value,
+        language: $('lang').value.trim() || 'Englisch',
+        countStep1: parseInt($('n1').value, 10),
+        countStep2: parseInt($('n2').value, 10),
+      }),
+    });
+    const box = $('vars');
+    for (const v of r.variants) box.appendChild(varRow(v));
+    $('genstate').textContent = 'generiert mit ' + r.model;
+    let msg = r.variants.length + ' Varianten unten eingefügt — noch NICHT gespeichert.\n\n';
+    msg += 'Lies jeden Text, bevor du speicherst. Alte Varianten stehen weiter da; die, die du nicht willst, mit „Löschen" wegnehmen.';
+    if (r.notes) msg += '\n\nHinweis vom Modell: ' + r.notes;
+    show(msg);
+    box.lastChild?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } catch (e) {
+    show('Fehler: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = before;
+  }
 };
 
 $('saveVars').onclick = async () => {
