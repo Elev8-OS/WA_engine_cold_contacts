@@ -1,0 +1,44 @@
+[
+  {
+    "id": "s1-invite",
+    "step": 1,
+    "label": "Erstnachricht — Kontext + Einladung",
+    "body": "Hi {{first_name}}, Reto here from Elev8 - we met at Bali Villa Connect. We're running CHA-08 on [DATE] at [VENUE]: [TOPIC]. Small room, villa owners and managers only. Want the details? Reply YES and I'll send them. Reply OUT to stop."
+  },
+  {
+    "id": "s1-question",
+    "step": 1,
+    "label": "Erstnachricht — Frage zuerst",
+    "body": "Hi {{first_name}}, Reto from Elev8 (we spoke at Bali Villa Connect). Quick one: are you still running your villas in [AREA]? Asking because CHA-08 on [DATE] is built for exactly that setup and I have a seat left. Reply 1 for details, 2 if the timing is off."
+  },
+  {
+    "id": "s1-numbers",
+    "step": 1,
+    "label": "Erstnachricht — Zahlen als Haken",
+    "body": "{{first_name}}, Reto here from the Bali Villa Connect crowd. At CHA-08 on [DATE] we open the numbers: [HOOK]. Free, [X] seats, [VENUE]. Reply SEND and the agenda plus sign-up link is on its way. OUT to opt out."
+  },
+  {
+    "id": "s1-short",
+    "step": 1,
+    "label": "Erstnachricht — kurz und direkt",
+    "body": "Hi {{first_name}} - Reto from Elev8, we met at Bali Villa Connect. CHA-08, [DATE], [VENUE]: [TOPIC IN FOUR WORDS]. I kept a seat for you. Reply YES and it's yours. Reply OUT to stop."
+  },
+  {
+    "id": "s2-inout",
+    "step": 2,
+    "label": "Follow-up — in oder out",
+    "body": "{{first_name}}, not chasing you - one question and I'll leave it alone. CHA-08 on [DATE]: in or out? Reply IN and I send the link. Reply OUT and I take you off the list, no hard feelings."
+  },
+  {
+    "id": "s2-seats",
+    "step": 2,
+    "label": "Follow-up — Plätze knapp",
+    "body": "{{first_name}}, [X] seats left for CHA-08 on [DATE]. Want me to just put your name down? Reply YES, no form needed. Reply OUT and I stop here."
+  },
+  {
+    "id": "s2-last",
+    "step": 2,
+    "label": "Follow-up — letzter Ping",
+    "body": "Last ping on this, {{first_name}} - CHA-08 is [DATE] at [VENUE]. Reply YES for the link, OUT and I stop. Either way, good to have met you at Bali Villa Connect."
+  }
+]
