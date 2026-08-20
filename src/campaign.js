@@ -29,12 +29,15 @@ function matches(clean, words) {
   return words.some((w) => bare === w || bare.startsWith(w + ' ') || bare.startsWith(w + ','));
 }
 
+// Der Kanal steht im Namen: in GHL laufen daneben E-Mail- und WhatsApp-Tags
+// aus derselben Kampagne, und "cha08-yes" allein sagt nicht, worauf jemand
+// geantwortet hat.
 const TAG = {
-  sent: 'cha08-sent',
-  yes: 'cha08-yes',
-  no: 'cha08-no',
-  replied: 'cha08-replied',
-  optedOut: 'cha08-opted-out',
+  sent: 'cha08-sms-sent',
+  yes: 'cha08-sms-yes',
+  no: 'cha08-sms-no',
+  replied: 'cha08-sms-replied',
+  optedOut: 'cha08-sms-opted-out',
 };
 
 /** Tag setzen, ohne den Ablauf zu stoppen, wenn GHL gerade klemmt. */
