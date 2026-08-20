@@ -107,6 +107,52 @@ export async function addTags(contactId, tags) {
   });
 }
 
+/**
+ * Ein GET ohne Retry und ohne Throw — für den Endpoint-Scanner.
+ * Liefert immer { status, ok, body } zurück, auch bei 4xx.
+ */
+export async function rawGet(pathname, { query, version } = {}) {
+  const url = new URL(config.ghl.baseUrl + pathname);
+  for (const [k, v] of Object.entries(query || {})) {
+    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+  }
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${config.ghl.token}`,
+        Version: version || config.ghl.versionContacts,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await res.text();
+    let body;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = { raw: text.slice(0, 300) };
+    }
+    return { status: res.status, ok: res.ok, body };
+  } catch (e) {
+    return { status: 0, ok: false, body: { error: String(e.message).slice(0, 200) } };
+  }
+}
+
+/**
+ * Alle Tags der Location — dokumentierter Endpoint, funktioniert überall.
+ * GET /locations/{locationId}/tags → [{ id, name, locationId }]
+ */
+export async function listLocationTags() {
+  const res = await request(`/locations/${config.ghl.locationId}/tags`, {
+    version: config.ghl.versionContacts,
+  });
+  const raw = res?.tags || res?.data || [];
+  return (Array.isArray(raw) ? raw : [])
+    .map((t) => ({ id: t.id || t._id || null, name: t.name || t.tag || '' }))
+    .filter((t) => t.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // ── Smart Lists ──────────────────────────────────────────────────────────────
 // Achtung: die Smart-List-Endpoints stehen nicht in der offiziellen v2-Doku.
 // Sie funktionieren auf vielen Locations, aber nicht garantiert auf jeder.

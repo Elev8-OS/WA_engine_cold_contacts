@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { db, getState, setState, logEvent } from './db.js';
 import { sendSms, addTags } from './ghl.js';
 import { pickVariant, markVariantSent, markVariantReplied, render } from './pool.js';
+import { settings, campaignEnded } from './settings.js';
 import { insideSendWindow, localDay, localTimeLabel, randomGapMs, HOUR_MS } from './time.js';
 
 const STOP_WORDS = [
@@ -35,19 +36,20 @@ function sentToday() {
 export function replyRate() {
   const rows = db
     .prepare('SELECT replied FROM sends WHERE error IS NULL ORDER BY id DESC LIMIT ?')
-    .all(config.guard.replyRateWindow);
+    .all(settings().replyRateWindow);
   if (rows.length === 0) return { sample: 0, rate: null };
   const replies = rows.filter((r) => r.replied === 1).length;
   return { sample: rows.length, rate: replies / rows.length };
 }
 
 function checkReplyRateGuard() {
+  const s = settings();
   const { sample, rate } = replyRate();
-  if (sample < config.guard.replyRateMinSample) return;
-  if (rate !== null && rate < config.guard.replyRateFloor) {
+  if (sample < s.replyRateMinSample) return;
+  if (rate !== null && rate < s.replyRateFloor) {
     pause(
       `Reply-Rate ${(rate * 100).toFixed(0)}% liegt unter dem Minimum von ` +
-        `${(config.guard.replyRateFloor * 100).toFixed(0)}% (letzte ${sample} Sends)`
+        `${(s.replyRateFloor * 100).toFixed(0)}% (letzte ${sample} Sends)`
     );
   }
 }
@@ -57,6 +59,8 @@ function checkReplyRateGuard() {
  * Step 1 = Erstnachricht. Step 2+ = Follow-up, nur ohne Antwort und nach Wartezeit.
  */
 function nextDueContact() {
+  const s = settings();
+
   const firstTouch = db
     .prepare(
       `SELECT * FROM contacts
@@ -66,9 +70,9 @@ function nextDueContact() {
     .get();
   if (firstTouch) return { contact: firstTouch, step: 1 };
 
-  if (config.pace.followupAfterHours <= 0) return null;
+  if (s.followupAfterHours <= 0) return null;
 
-  const cutoff = Date.now() - config.pace.followupAfterHours * HOUR_MS;
+  const cutoff = Date.now() - s.followupAfterHours * HOUR_MS;
   const followUp = db
     .prepare(
       `SELECT * FROM contacts
@@ -76,7 +80,7 @@ function nextDueContact() {
          AND step >= 1 AND step < ? AND last_sent_at IS NOT NULL AND last_sent_at <= ?
        ORDER BY last_sent_at ASC LIMIT 1`
     )
-    .get(config.pace.maxMessagesWithoutReply, cutoff);
+    .get(s.maxMessagesWithoutReply, cutoff);
   if (followUp) return { contact: followUp, step: followUp.step + 1 };
 
   return null;
@@ -94,7 +98,7 @@ async function sendTo(contact, step) {
   const body = render(variant.body, contact);
   const now = Date.now();
 
-  if (config.ops.dryRun) {
+  if (settings().dryRun) {
     db.prepare(
       `INSERT INTO sends (contact_id, variant_id, step, body, sent_at, message_id)
        VALUES (?, ?, ?, ?, ?, ?)`
@@ -142,13 +146,19 @@ async function sendTo(contact, step) {
 export async function tick() {
   if (isPaused()) return { action: 'paused', reason: getState('pause_reason', '') };
 
+  const today = localDay();
+  if (campaignEnded(today)) {
+    return { action: 'campaign_ended', endedAt: settings().campaignEndsAt };
+  }
+
   if (!insideSendWindow()) {
     return { action: 'outside_window', localTime: localTimeLabel() };
   }
 
-  const today = sentToday();
-  if (today >= config.pace.dailyCap) {
-    return { action: 'daily_cap_reached', today };
+  const s = settings();
+  const sent = sentToday();
+  if (sent >= s.dailyCap) {
+    return { action: 'daily_cap_reached', today: sent };
   }
 
   const nextAt = Number(getState('next_send_at', '0'));
@@ -185,12 +195,14 @@ export async function handleInbound({ contactId, text }) {
     markVariantReplied(lastSend.variant_id);
   }
 
+  const dryRun = settings().dryRun;
+
   if (isStop) {
     db.prepare(
       "UPDATE contacts SET status = 'opted_out', opted_out_at = ?, replied_at = COALESCE(replied_at, ?) WHERE contact_id = ?"
     ).run(now, now, contactId);
     logEvent('info', `Opt-out von ${contactId}: "${clean.slice(0, 40)}"`);
-    if (!config.ops.dryRun) {
+    if (!dryRun) {
       try {
         await addTags(contactId, ['cha08-opted-out']);
       } catch (e) {
@@ -202,7 +214,7 @@ export async function handleInbound({ contactId, text }) {
 
   db.prepare("UPDATE contacts SET status = 'replied', replied_at = ? WHERE contact_id = ?").run(now, contactId);
   logEvent('info', `Antwort von ${contactId} — kein Follow-up mehr, Konversation ist offen`);
-  if (!config.ops.dryRun) {
+  if (!dryRun) {
     try {
       await addTags(contactId, ['cha08-replied']);
     } catch (e) {
@@ -213,6 +225,7 @@ export async function handleInbound({ contactId, text }) {
 }
 
 export function stats() {
+  const s = settings();
   const byStatus = db
     .prepare('SELECT status, COUNT(*) AS c FROM contacts GROUP BY status')
     .all()
@@ -221,21 +234,27 @@ export function stats() {
   const totalSends = db.prepare('SELECT COUNT(*) AS c FROM sends WHERE error IS NULL').get().c;
   const errors = db.prepare('SELECT COUNT(*) AS c FROM sends WHERE error IS NOT NULL').get().c;
   const { sample, rate } = replyRate();
+  const today = localDay();
 
   return {
     paused: isPaused(),
     pauseReason: getState('pause_reason', ''),
-    dryRun: config.ops.dryRun,
+    dryRun: s.dryRun,
     localTime: localTimeLabel(),
     insideWindow: insideSendWindow(),
-    sendWindow: `${config.pace.windowStart}:00–${config.pace.windowEnd}:00 ${config.pace.timezone}`,
+    sendWindow: `${s.windowStart}:00–${s.windowEnd}:00 ${s.timezone}`,
+    campaignEndsAt: s.campaignEndsAt || null,
+    campaignEnded: campaignEnded(today),
     sentToday: sentToday(),
-    dailyCap: config.pace.dailyCap,
+    dailyCap: s.dailyCap,
+    gapSeconds: `${s.minGapSeconds}–${s.maxGapSeconds}`,
+    followupAfterHours: s.followupAfterHours,
+    maxMessagesWithoutReply: s.maxMessagesWithoutReply,
     totalSends,
     errors,
     replyRate: rate,
     replyRateSample: sample,
-    replyRateFloor: config.guard.replyRateFloor,
+    replyRateFloor: s.replyRateFloor,
     nextSendAt: Number(getState('next_send_at', '0')) || null,
     contacts: byStatus,
   };

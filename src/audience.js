@@ -5,6 +5,8 @@ import {
   getSmartListContacts,
   searchContacts_advanced,
   listAllContacts,
+  listLocationTags,
+  rawGet,
 } from './ghl.js';
 
 /** Kontakt-Objekte aus verschiedenen GHL-Endpoints auf eine Form bringen. */
@@ -42,9 +44,77 @@ export function setAudience({ type, id, label }) {
   return getAudience();
 }
 
-/** Smart Lists für die Auswahl holen. */
+/**
+ * Smart Lists für die Auswahl holen.
+ * Auf vielen Locations nicht verfügbar — HighLevel hat dafür keinen
+ * dokumentierten v2-Endpoint. Der Aufruf wirft dann, /audience zeigt es an.
+ */
 export async function availableSmartLists() {
   return listSmartLists({ limit: 200 });
+}
+
+/** Tags der Location für die Auswahl — dokumentiert und überall verfügbar. */
+export async function availableTags() {
+  return listLocationTags();
+}
+
+/**
+ * Endpoint-Scanner für Smart Lists.
+ *
+ * HighLevel hat für Smart Lists keinen dokumentierten v2-Endpoint. Statt zu
+ * raten, probiert das hier eine Reihe plausibler Pfade gegen die echte Location
+ * und zeigt Statuscode und Antwort. Was 200 liefert, ist der Weg.
+ */
+export async function discoverSmartLists() {
+  const loc = config.ghl.locationId;
+  const candidates = [
+    { path: '/contacts/smart-lists', query: { locationId: loc, limit: 5 } },
+    { path: '/contacts/smartlists', query: { locationId: loc, limit: 5 } },
+    { path: '/contacts/lists', query: { locationId: loc, limit: 5 } },
+    { path: '/contacts/views', query: { locationId: loc, limit: 5 } },
+    { path: `/locations/${loc}/smart-lists`, query: { limit: 5 } },
+    { path: `/locations/${loc}/smartlists`, query: { limit: 5 } },
+    { path: `/locations/${loc}/lists`, query: { limit: 5 } },
+    { path: `/locations/${loc}/contacts/smart-lists`, query: { limit: 5 } },
+    { path: `/locations/${loc}/contacts/views`, query: { limit: 5 } },
+    { path: '/smart-lists', query: { locationId: loc, limit: 5 } },
+    { path: '/objects/contact/views', query: { locationId: loc, limit: 5 } },
+    { path: `/locations/${loc}/objects/contact/views`, query: { limit: 5 } },
+    { path: '/objects/contact/smart-lists', query: { locationId: loc, limit: 5 } },
+    { path: '/objects/contact/records/views', query: { locationId: loc, limit: 5 } },
+  ];
+
+  const versions = [config.ghl.versionContacts, '2021-04-15'];
+  const results = [];
+
+  for (const c of candidates) {
+    for (const version of versions) {
+      const r = await rawGet(c.path, { query: c.query, version });
+      results.push({
+        endpoint: `GET ${c.path}`,
+        version,
+        status: r.status,
+        ok: r.ok,
+        // Bei 200 die Struktur zeigen, sonst die Fehlermeldung — kurz halten.
+        response: r.ok
+          ? JSON.stringify(r.body).slice(0, 400)
+          : String(r.body?.message || r.body?.error || JSON.stringify(r.body)).slice(0, 160),
+      });
+      if (r.ok) break; // dieser Pfad geht, die zweite Version brauchen wir nicht
+    }
+  }
+
+  const working = results.filter((r) => r.ok);
+  return {
+    locationId: loc ? `${loc.slice(0, 4)}…${loc.slice(-4)}` : '(fehlt)',
+    tried: results.length,
+    working,
+    all: results,
+    verdict: working.length
+      ? `Treffer: ${working.map((w) => w.endpoint).join(', ')} — sag mir das, dann verdrahte ich es.`
+      : 'Kein Pfad liefert 200. Smart Lists sind über die öffentliche API nicht erreichbar — ' +
+        'der Tag-Weg ist die Lösung, und er hält die Liste genauso aktuell.',
+  };
 }
 
 /**
@@ -208,13 +278,20 @@ export async function probe() {
     out.listContacts = { ok: false, error: e.message.slice(0, 200) };
   }
 
+  try {
+    const tags = await listLocationTags();
+    out.tags = { ok: true, found: tags.length, sample: tags.slice(0, 8).map((t) => t.name) };
+  } catch (e) {
+    out.tags = { ok: false, error: e.message.slice(0, 200) };
+  }
+
+  const tagCount = out.tags?.ok ? out.tags.found : 0;
   out.recommendation = out.smartListMembers?.ok
     ? 'Smart List direkt nutzbar — Typ "smartlist" wählen.'
-    : out.contactsSearch?.ok
-      ? 'Smart Lists nicht erreichbar. In GHL die Liste per Bulk Action taggen und Typ "tag" nutzen.'
-      : out.listContacts?.ok
-        ? 'Nur der Kontakt-Vollscan funktioniert. Typ "tag" nutzen, der Fallback filtert clientseitig.'
-        : 'Kein Weg funktioniert — Token und Scopes prüfen.';
+    : out.contactsSearch?.ok || out.listContacts?.ok
+      ? `Smart Lists hat HighLevel nicht als API-Endpoint. Nutze Typ "tag": in GHL die Smart List öffnen, alle auswählen, Bulk Action "Add Tag" — dann hier den Tag wählen.` +
+        (tagCount ? ` ${tagCount} Tags stehen zur Auswahl.` : '')
+      : 'Kein Weg funktioniert — Token und Scopes prüfen.';
 
   return out;
 }
