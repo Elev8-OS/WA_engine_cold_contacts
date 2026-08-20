@@ -27,7 +27,7 @@ export function createServer() {
     next();
   };
 
-  // ── Inbound-Webhook aus GHL ──────────────────────────────────────────────────
+  // ── Inbound-Webhook aus GHL ─────────────────────────────────────────────────────
   // GHL: Automation → Workflow mit Trigger "Customer Replied"
   //      → Action Webhook auf POST https://<app>/webhooks/ghl/inbound
   app.post('/webhooks/ghl/inbound', async (req, res) => {
@@ -117,7 +117,7 @@ export function createServer() {
     res.json({ imported: n });
   });
 
-  // ── Zielgruppe ───────────────────────────────────────────────────────────
+  // ── Zielgruppe ──────────────────────────────────────────────────────────
   app.get('/api/audience', (_req, res) => res.json(getAudience()));
 
   app.get('/api/audience/smartlists', requireAdmin, async (_req, res) => {
@@ -214,7 +214,7 @@ export function createServer() {
     }
   });
 
-  // ── Nachrichten-Pool ───────────────────────────────────────────────────────
+  // ── Nachrichten-Pool ──────────────────────────────────────────────────────
   app.get('/api/pool', requireAdmin, (_req, res) => res.json({ variants: listVariants() }));
 
   app.delete('/admin/pool/:id', requireAdmin, (req, res) => {
@@ -503,9 +503,10 @@ $('gen').onclick = async () => {
     const box = $('vars');
     for (const v of r.variants) box.appendChild(varRow(v));
     $('genstate').textContent = 'generiert mit ' + r.model;
-    let msg = r.variants.length + ' Varianten unten eingefügt — noch NICHT gespeichert.\n\n';
+    const NL = String.fromCharCode(10);
+    let msg = r.variants.length + ' Varianten unten eingefügt — noch NICHT gespeichert.' + NL + NL;
     msg += 'Lies jeden Text, bevor du speicherst. Alte Varianten stehen weiter da; die, die du nicht willst, mit „Löschen" wegnehmen.';
-    if (r.notes) msg += '\n\nHinweis vom Modell: ' + r.notes;
+    if (r.notes) msg += NL + NL + 'Hinweis vom Modell: ' + r.notes;
     show(msg);
     box.lastChild?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   } catch (e) {
