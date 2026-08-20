@@ -5,6 +5,7 @@ import { logEvent, getState, setState } from './db.js';
 import { createServer } from './server.js';
 import { tick } from './campaign.js';
 import { upsertVariants, poolStats } from './pool.js';
+import { getAudience, syncAudience } from './audience.js';
 
 const problems = assertConfig();
 if (problems.length) {
@@ -55,9 +56,34 @@ const interval = setInterval(async () => {
   }
 }, 30_000);
 
+// Zielgruppen-Sync. Smart Lists sind dynamisch — wer neu reinrutscht, soll
+// ohne Handarbeit in die Warteschlange kommen.
+let syncing = false;
+async function runSync(trigger) {
+  if (syncing) return;
+  const { type } = getAudience();
+  if (type === 'manual') return;
+  syncing = true;
+  try {
+    await syncAudience({ prune: config.audience.pruneOnSync });
+  } catch (e) {
+    logEvent('error', `Sync (${trigger}) fehlgeschlagen: ${e.message}`);
+  } finally {
+    syncing = false;
+  }
+}
+
+const syncIntervalMs = Math.max(5, config.audience.syncIntervalMinutes) * 60_000;
+const syncInterval = setInterval(() => runSync('intervall'), syncIntervalMs);
+if (getAudience().type !== 'manual') {
+  logEvent('info', `Zielgruppen-Sync alle ${config.audience.syncIntervalMinutes} Minuten`);
+  setTimeout(() => runSync('start'), 5000);
+}
+
 const shutdown = (signal) => {
   logEvent('info', `${signal} empfangen — Shutdown`);
   clearInterval(interval);
+  clearInterval(syncInterval);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 5000);
 };

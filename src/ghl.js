@@ -106,3 +106,81 @@ export async function addTags(contactId, tags) {
     version: config.ghl.versionContacts,
   });
 }
+
+// ── Smart Lists ──────────────────────────────────────────────────────────────
+// Achtung: die Smart-List-Endpoints stehen nicht in der offiziellen v2-Doku.
+// Sie funktionieren auf vielen Locations, aber nicht garantiert auf jeder.
+// Deshalb gibt es /api/audience/probe und den Tag-Fallback in audience.js.
+
+/** Alle Smart Lists der Location. */
+export async function listSmartLists({ limit = 100, offset = 0 } = {}) {
+  const res = await request('/contacts/smart-lists', {
+    version: config.ghl.versionContacts,
+    query: { locationId: config.ghl.locationId, limit, offset },
+  });
+  const raw = res?.smartLists || res?.smartlists || res?.lists || res?.data || [];
+  return (Array.isArray(raw) ? raw : []).map((l) => ({
+    id: l.id || l._id || l.smartListId,
+    name: l.name || l.title || '(ohne Namen)',
+    count: l.count ?? l.totalCount ?? null,
+  }));
+}
+
+/** Mitglieder einer Smart List, paginiert bis zum Ende. */
+export async function getSmartListContacts(smartListId, { pageSize = 100, maxPages = 60 } = {}) {
+  const out = [];
+  for (let page = 0; page < maxPages; page++) {
+    const res = await request(`/contacts/smart-lists/${smartListId}/contacts`, {
+      version: config.ghl.versionContacts,
+      query: {
+        locationId: config.ghl.locationId,
+        limit: pageSize,
+        offset: page * pageSize,
+      },
+    });
+    const batch = res?.contacts || res?.data || [];
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    out.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+  return out;
+}
+
+/** Contacts-Search mit Filtern. Body-Schema ist bei HighLevel nicht stabil dokumentiert. */
+export async function searchContacts_advanced(filters, { pageLimit = 100, page = 1 } = {}) {
+  const res = await request('/contacts/search', {
+    method: 'POST',
+    body: { locationId: config.ghl.locationId, page, pageLimit, filters },
+    version: config.ghl.versionContacts,
+  });
+  return { contacts: res?.contacts || [], total: res?.total ?? null };
+}
+
+/**
+ * Alle Kontakte der Location durchblättern. Letzte Rückfalllinie:
+ * nutzt nur dokumentierte Endpoints und filtert clientseitig.
+ */
+export async function listAllContacts({ pageSize = 100, maxPages = 100 } = {}) {
+  const out = [];
+  let startAfter;
+  let startAfterId;
+  for (let page = 0; page < maxPages; page++) {
+    const res = await request('/contacts/', {
+      version: config.ghl.versionContacts,
+      query: {
+        locationId: config.ghl.locationId,
+        limit: pageSize,
+        startAfter,
+        startAfterId,
+      },
+    });
+    const batch = res?.contacts || [];
+    if (batch.length === 0) break;
+    out.push(...batch);
+    const meta = res?.meta || {};
+    startAfter = meta.startAfter ?? batch.at(-1)?.dateAdded;
+    startAfterId = meta.startAfterId ?? batch.at(-1)?.id;
+    if (batch.length < pageSize || (!startAfter && !startAfterId)) break;
+  }
+  return out;
+}

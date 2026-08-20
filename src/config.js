@@ -54,6 +54,13 @@ export const config = {
     followupAfterHours: num('FOLLOWUP_AFTER_HOURS', 48),
     maxMessagesWithoutReply: num('MAX_MESSAGES_WITHOUT_REPLY', 2),
   },
+  audience: {
+    // smartlist | tag | manual
+    type: process.env.AUDIENCE_SOURCE || 'manual',
+    id: process.env.AUDIENCE_ID || '',
+    syncIntervalMinutes: num('AUDIENCE_SYNC_INTERVAL_MINUTES', 60),
+    pruneOnSync: bool('AUDIENCE_PRUNE_ON_SYNC', true),
+  },
   guard: {
     replyRateWindow: num('REPLY_RATE_WINDOW', 25),
     replyRateFloor: num('REPLY_RATE_FLOOR', 0.2),
