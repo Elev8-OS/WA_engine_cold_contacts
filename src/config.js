@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 // Minimaler .env-Loader — keine Dependency nötig.
+// Bestehende Umgebungsvariablen gewinnen, damit Railway immer sticht.
 function loadDotEnv() {
   const file = path.resolve(process.cwd(), '.env');
   if (!fs.existsSync(file)) return;
@@ -53,6 +54,14 @@ export const config = {
     maxGapSeconds: num('MAX_GAP_SECONDS', 900),
     followupAfterHours: num('FOLLOWUP_AFTER_HOURS', 48),
     maxMessagesWithoutReply: num('MAX_MESSAGES_WITHOUT_REPLY', 2),
+  },
+  ai: {
+    // Anthropic API-Key für den Varianten-Generator auf /settings.
+    // Ohne Key ist der Generator aus, alles andere läuft normal weiter.
+    apiKey: process.env.ANTHROPIC_API_KEY || '',
+    // Leer lassen: dann wird das neueste Sonnet-Modell automatisch gewählt.
+    model: process.env.ANTHROPIC_MODEL || '',
+    baseUrl: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
   },
   audience: {
     // smartlist | tag | manual
