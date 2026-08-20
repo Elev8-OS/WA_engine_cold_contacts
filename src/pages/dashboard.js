@@ -3,8 +3,9 @@ import { stats } from '../campaign.js';
 import { poolStats } from '../pool.js';
 import { settings } from '../settings.js';
 import { getAudience } from '../audience.js';
+import { loginCard, LOGIN_JS, LOGOUT_JS, LOGOUT_LINK } from './auth-ui.js';
 
-export function dashboardHtml() {
+export function dashboardHtml({ loggedIn = false } = {}) {
   const s = stats();
   const a = getAudience();
   const pool = poolStats();
@@ -84,6 +85,15 @@ export function dashboardHtml() {
   #stop { border-color:#ef444466; background:#ef444418; color:#f87171; }
   .ctrl button:disabled { opacity:.4; cursor:default; }
   #ctrlmsg { font-size:12px; color:#8b8b93; flex:1 1 100%; margin:0; }
+  #logincard { background:#141416; border:1px solid #24242a; border-radius:10px;
+               padding:16px; margin-bottom:16px; }
+  #logincard h2 { margin:0 0 6px; }
+  #logincard .sub { margin:0 0 10px; }
+  #logincard input { width:100%; max-width:340px; padding:9px 11px; background:#0f0f11;
+                     color:#e7e7e9; border:1px solid #2c2c34; border-radius:8px; font-size:13px; }
+  #logincard button { padding:9px 16px; border-radius:8px; border:1px solid #f6bb1255;
+                      background:#f6bb1218; color:#f6bb12; font-size:13px; font-weight:600;
+                      cursor:pointer; margin-left:8px; }
 </style></head><body>
 
 <h1>SMS Rotator <span class="pill">${statusLabel}</span></h1>
@@ -91,7 +101,7 @@ export function dashboardHtml() {
     s.dryRun ? ' · <b class="warn">DRY RUN</b>' : ''
   } &middot; Abstand ${esc(s.gapSeconds)} s${
     s.campaignEndsAt ? ` &middot; Ende ${esc(s.campaignEndsAt)}` : ''
-  }<br><a href="/audience">Zielgruppe</a> &middot; <a href="/settings">Einstellungen</a></div>
+  }<br><a href="/audience">Zielgruppe</a> &middot; <a href="/settings">Einstellungen</a>${loggedIn ? LOGOUT_LINK : ''}</div>
 
 ${
   s.campaignEnded
@@ -100,8 +110,8 @@ ${
 }
 ${s.paused && s.pauseReason ? `<div class="banner"><b>Pausiert:</b> ${esc(s.pauseReason)}</div>` : ''}
 
-<div class="ctrl">
-  <input id="ck" type="password" placeholder="ADMIN_KEY" autocomplete="off">
+${loggedIn ? '' : loginCard()}
+${loggedIn ? `<div class="ctrl">
   <button id="go"${s.paused ? '' : ' disabled'}>${
     s.dryRun ? 'Freigeben (Testmodus)' : 'Scharf schalten'
   }</button>
@@ -115,7 +125,7 @@ ${s.paused && s.pauseReason ? `<div class="banner"><b>Pausiert:</b> ${esc(s.paus
         ? 'Läuft im Testmodus. Es geht nichts raus.'
         : 'Läuft scharf. Es gehen echte SMS raus.'
   }</p>
-</div>
+</div>` : ''}
 
 <div class="grid">
   <div class="card"><div class="k">Heute gesendet</div>
@@ -193,12 +203,14 @@ ${
 }
 </table>
 
-<div class="sub" style="margin-top:24px">Seite lädt alle 20 Sekunden neu — ausser du tippst gerade.</div>
+<div class="sub" style="margin-top:24px">Seite lädt alle 20 Sekunden neu.</div>
 
 <script>
+${loggedIn ? '' : LOGIN_JS}
+${loggedIn ? LOGOUT_JS : ''}
+${loggedIn ? `
 const el = (id) => document.getElementById(id);
 const msg = el('ctrlmsg');
-const keyEl = el('ck');
 const scharf = ${s.dryRun ? 'false' : 'true'};
 
 // Zwei-Klick-Bestätigung statt Dialog: der erste Klick bewaffnet, der zweite feuert.
@@ -208,7 +220,6 @@ function arm(btn, label, run) {
   let timer = null;
   const reset = () => { armed = false; btn.textContent = label; clearTimeout(timer); };
   btn.onclick = async () => {
-    if (!keyEl.value.trim()) { msg.textContent = 'Bitte zuerst den ADMIN_KEY eintragen.'; keyEl.focus(); return; }
     if (!armed) {
       armed = true;
       btn.textContent = 'Wirklich? Nochmal klicken';
@@ -224,7 +235,7 @@ function arm(btn, label, run) {
 async function post(path, body) {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'x-admin-key': keyEl.value.trim(), 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body || {}),
   });
   const out = await res.json().catch(() => ({}));
@@ -252,11 +263,8 @@ arm(el('stop'), 'Notbremse', async () => {
   } catch (e) { msg.textContent = 'Fehler: ' + e.message; }
 });
 
-// Auto-Reload, aber nicht wenn der Key im Feld steht oder du gerade tippst.
-setInterval(() => {
-  const busy = keyEl.value.trim() !== '' || document.activeElement === keyEl;
-  if (!busy) location.reload();
-}, 20000);
+setInterval(() => location.reload(), 20000);
+` : ''}
 </script>
 </body></html>`;
 }
