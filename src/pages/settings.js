@@ -42,8 +42,9 @@ ${loggedIn ? `<div class="card">
   <h2>Kampagne beschreiben</h2>
   <div class="sub" style="margin:0 0 4px">
     Thema, Datum, Ort, Zielgruppe, was du erreichen willst. Je konkreter, desto
-    brauchbarer die Varianten. Das Ergebnis landet unten als Vorschlag im Editor —
-    gespeichert wird nichts, bis du auf „Nachrichten speichern" klickst.
+    brauchbarer die Varianten. Mit „Beschreibung speichern" bleibt der Text für
+    das nächste Mal stehen. Die erzeugten Varianten landen unten als Vorschlag
+    — gespeichert sind sie erst mit „Nachrichten speichern".
   </div>
   <textarea id="brief" placeholder="Beispiel: CHA-08 am 28. August, im OXO The Living. Zielgruppe sind Villa-Owner und Manager, die ich am Bali Villa Connect getroffen habe. Thema: echte Occupancy- und ADR-Zahlen aus Bali-Villen und was die besten Betriebe anders machen. Plätze beschränkt. Ziel: sie sollen antworten, damit ich ihnen die Details schicken kann."></textarea>
   <div class="row" style="margin-top:12px">
@@ -53,6 +54,7 @@ ${loggedIn ? `<div class="card">
       <div><label>Step 2</label><input id="n2" type="number" min="0" max="8" value="3"></div>
     </div>
   </div>
+  <button id="savebrief">Beschreibung speichern</button>
   <button id="gen">Varianten schreiben</button>
   <span id="genstate" class="dim" style="font-size:12px; margin-left:8px"></span>
 </div>
@@ -213,6 +215,29 @@ loadAll();
 $('add').onclick = () => {
   newCount++;
   $('vars').appendChild(varRow({ id: '__new' + newCount, step: 1, label: '', body: '', active: true }));
+};
+
+$('savebrief').onclick = async () => {
+  const btn = $('savebrief');
+  const before = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'speichert \u2026';
+  try {
+    await call('/admin/brief', {
+      method: 'POST',
+      body: JSON.stringify({
+        brief: $('brief').value,
+        language: $('lang').value.trim() || 'Englisch',
+        countStep1: parseInt($('n1').value, 10),
+        countStep2: parseInt($('n2').value, 10),
+      }),
+    });
+    show('Beschreibung gespeichert. Sie steht beim n\u00e4chsten \u00d6ffnen wieder da.');
+  } catch (e) {
+    show('Fehler: ' + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = before;
 };
 
 $('gen').onclick = async () => {
