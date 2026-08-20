@@ -5,6 +5,7 @@ import { handleInbound, stats, pause, resume } from './campaign.js';
 import { poolStats, upsertVariants, listVariants, deleteVariant } from './pool.js';
 import { settings, settingsDetail, setSettings, resetSetting } from './settings.js';
 import { getBrief, generateVariants } from './generate.js';
+import { isAuthorized, isLoggedIn, setSessionCookie, clearSessionCookie } from './auth.js';
 import { dashboardHtml } from './pages/dashboard.js';
 import { audiencePageHtml } from './pages/audience.js';
 import { settingsPageHtml } from './pages/settings.js';
@@ -23,12 +24,30 @@ export function createServer() {
   app.use(express.json({ limit: '1mb' }));
 
   const requireAdmin = (req, res, next) => {
-    const key = req.get('x-admin-key') || req.query.key;
-    if (!config.ops.adminKey || key !== config.ops.adminKey) {
-      return res.status(401).json({ error: 'unauthorized' });
-    }
+    if (!isAuthorized(req)) return res.status(401).json({ error: 'unauthorized' });
     next();
   };
+
+  // ── Login ──────────────────────────────────────────────────────────────────
+  // Einmal anmelden, danach ein HttpOnly-Cookie für 30 Tage. Der Key muss nicht
+  // mehr auf jeder Seite neu eingegeben werden.
+  app.post('/login', (req, res) => {
+    const key = String(req.body?.key || '');
+    if (!config.ops.adminKey || key !== config.ops.adminKey) {
+      logEvent('warn', 'Fehlgeschlagener Login-Versuch');
+      return res.status(401).json({ error: 'Falscher Key' });
+    }
+    setSessionCookie(req, res);
+    logEvent('info', 'Angemeldet');
+    res.json({ ok: true });
+  });
+
+  app.post('/logout', (_req, res) => {
+    clearSessionCookie(res);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/me', (req, res) => res.json({ loggedIn: isLoggedIn(req) }));
 
   // ── Inbound-Webhook aus GHL ─────────────────────────────────────────────────────
   // GHL: Automation → Workflow mit Trigger "Customer Replied"
@@ -228,16 +247,16 @@ export function createServer() {
   });
 
   // ── Seiten ────────────────────────────────────────────────────────────────
-  app.get('/', (_req, res) => {
-    res.type('html').send(dashboardHtml());
+  app.get('/', (req, res) => {
+    res.type('html').send(dashboardHtml({ loggedIn: isLoggedIn(req) }));
   });
 
-  app.get('/audience', (_req, res) => {
-    res.type('html').send(audiencePageHtml());
+  app.get('/audience', (req, res) => {
+    res.type('html').send(audiencePageHtml({ loggedIn: isLoggedIn(req) }));
   });
 
-  app.get('/settings', (_req, res) => {
-    res.type('html').send(settingsPageHtml());
+  app.get('/settings', (req, res) => {
+    res.type('html').send(settingsPageHtml({ loggedIn: isLoggedIn(req) }));
   });
 
   return app;
