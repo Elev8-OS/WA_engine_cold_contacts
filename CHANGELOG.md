@@ -9,6 +9,51 @@ Nichts offen.
 
 ---
 
+## [1.3.0] — 2026-08-20
+
+Die Nachrichten schreiben sich selbst. Kampagne einmal beschreiben, das Modell
+liefert die Varianten — als Vorschlag, nicht als fait accompli.
+
+### Hinzugefügt
+
+- **Feld „Kampagne beschreiben" auf `/settings`.** Thema, Datum, Ort, Zielgruppe,
+  Ziel. Dazu Sprache und Anzahl der Varianten pro Step. Ein Klick, und die Varianten
+  stehen unten im Editor.
+- **`src/generate.js`** — Anthropic Messages API mit erzwungenem Tool-Schema, damit das
+  Ergebnis strukturiert zurückkommt statt aus Prosa geparst werden zu müssen.
+- **Die Regeln stecken im System-Prompt**, nicht im Kopf des Betreibers: kein Link in
+  der Erstnachricht, genau ein Ask mit Drei-Zeichen-Antwort, Opt-out im Klartext, Plain
+  Text, 160 bis 300 Zeichen, `{{first_name}}` als einziger Platzhalter, und Varianz in
+  der **Struktur** statt in einzelnen Wörtern — Wortsubstitution ist genau das, was
+  Spam-Filter erkennen.
+- **Modell wird automatisch bestimmt** über `GET /v1/models` (neuestes Sonnet), 24 Stunden
+  gecacht. So bricht der Generator nicht, wenn Modellnamen sich ändern.
+  `ANTHROPIC_MODEL` überschreibt.
+- **IDs werden geslugt, mit Step-Prefix versehen und gegen bestehende dedupt** — aus
+  „Frage zuerst" wird `s1-frage-zuerst`, bei Kollision `-2`.
+- **`test/generate.test.mjs`** — 34 Checks gegen einen Mock-Anthropic: Modellauswahl,
+  Cache, ID-Dedupe, Inhalt des Prompts, Grenzen der Anzahl, Fehlerfälle, und dass der
+  Pool dabei unangetastet bleibt.
+
+### Wichtig zu wissen
+
+- **Der Generator speichert nichts.** Die Varianten landen als Vorschlag im Editor und
+  sind mit „neu generiert" markiert. Erst „Nachrichten speichern" schreibt sie in die
+  Datenbank. Bei Nachrichten an echte Kontakte gehört der letzte Blick einem Menschen.
+- **In GHL ist dafür nichts einzustellen.** Es braucht nur `ANTHROPIC_API_KEY` in
+  Railway. Ohne Key ist der Button deaktiviert und sagt das auch.
+- Das Modell erfindet keine Platzhalter in eckigen Klammern. Fehlt ein Detail im Brief,
+  formuliert es die Nachricht so, dass sie ohne dieses Detail funktioniert, und schreibt
+  in `notes`, was gefehlt hat.
+
+### Behoben
+
+- Eine Escape-Ebene in der Statusmeldung des Generators lieferte einen echten Zeilenumbruch
+  in ein Client-String-Literal und liess damit das komplette Inline-Script der
+  Settings-Seite nicht mehr parsen. Ersetzt durch `String.fromCharCode(10)`.
+
+---
+
 ## [1.2.0] — 2026-08-20
 
 Alles im Tool einstellbar. Vorher lagen die Nachrichten in einer Datei im Repo und
