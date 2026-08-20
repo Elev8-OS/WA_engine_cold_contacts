@@ -57,6 +57,15 @@ export function startMockGhl(port = 4444) {
     });
   });
 
+  app.get('/locations/:loc/tags', (req, res) => {
+    res.json({
+      tags: [
+        { id: 't2', name: 'other', locationId: req.params.loc },
+        { id: 't1', name: 'cha08-invite', locationId: req.params.loc },
+      ],
+    });
+  });
+
   app.post('/conversations/messages', (req, res) => {
     state.sent.push(req.body);
     res.json({ conversationId: 'cv1', messageId: 'msg' + state.sent.length });
