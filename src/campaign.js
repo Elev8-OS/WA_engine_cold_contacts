@@ -10,46 +10,6 @@ const STOP_WORDS = [
   'berhenti', 'abmelden',
 ];
 
-// Ein Ja ist alles, was in drei Zeichen passt - genau so sind die Nachrichten
-// geschrieben. Wer laenger antwortet, bekommt keine Automatik, sondern einen
-// Menschen: das ist eine offene Konversation und kein Formular.
-const YES_WORDS = [
-  'yes', 'y', 'yeah', 'yep', 'yup', 'ok', 'okay', 'sure', 'in', 'send', 'details',
-  'info', 'interested', '1', 'ya', 'iya', 'boleh', 'mau', 'ja',
-];
-
-const NO_WORDS = [
-  'no', 'nope', 'nah', '2', 'later', 'not now', 'maybe later', 'pass',
-  'tidak', 'nanti', 'belum', 'nein',
-];
-
-/** Antwort auf ein einzelnes Schlagwort pruefen, nicht auf einen ganzen Satz. */
-function matches(clean, words) {
-  const bare = clean.replace(/[.!,;:]+$/, '').trim();
-  return words.some((w) => bare === w || bare.startsWith(w + ' ') || bare.startsWith(w + ','));
-}
-
-// Der Kanal steht im Namen: in GHL laufen daneben E-Mail- und WhatsApp-Tags
-// aus derselben Kampagne, und "cha08-yes" allein sagt nicht, worauf jemand
-// geantwortet hat.
-const TAG = {
-  sent: 'cha08-sms-sent',
-  yes: 'cha08-sms-yes',
-  no: 'cha08-sms-no',
-  replied: 'cha08-sms-replied',
-  optedOut: 'cha08-sms-opted-out',
-};
-
-/** Tag setzen, ohne den Ablauf zu stoppen, wenn GHL gerade klemmt. */
-async function tag(contactId, name) {
-  if (settings().dryRun) return;
-  try {
-    await addTags(contactId, [name]);
-  } catch (e) {
-    logEvent('warn', `Tag ${name} fuer ${contactId} fehlgeschlagen: ${e.message}`);
-  }
-}
-
 export function isPaused() {
   return getState('paused', config.ops.startPaused ? '1' : '0') === '1';
 }
@@ -72,14 +32,28 @@ function sentToday() {
   return rows.filter((r) => localDay(r.sent_at) === day).length;
 }
 
-/** Reply-Rate über die letzten N erfolgreichen Sends. */
+/**
+ * Reply-Rate über die letzten N erfolgreichen Sends.
+ *
+ * Sends unter der Reifezeit zählen nicht mit. Bei Kaltkontakt kommen Antworten
+ * über Tage — ohne diese Grenze rechnet die Bremse Nachrichten ein, die noch
+ * niemand gelesen hat, und pausiert die Kampagne für ein Problem, das keins ist.
+ */
 export function replyRate() {
+  const s = settings();
+  const cutoff = Date.now() - s.replyRateMaturityHours * HOUR_MS;
+
   const rows = db
-    .prepare('SELECT replied FROM sends WHERE error IS NULL ORDER BY id DESC LIMIT ?')
-    .all(settings().replyRateWindow);
-  if (rows.length === 0) return { sample: 0, rate: null };
+    .prepare('SELECT replied FROM sends WHERE error IS NULL AND sent_at <= ? ORDER BY id DESC LIMIT ?')
+    .all(cutoff, s.replyRateWindow);
+
+  const maturing = db
+    .prepare('SELECT COUNT(*) AS c FROM sends WHERE error IS NULL AND sent_at > ?')
+    .get(cutoff).c;
+
+  if (rows.length === 0) return { sample: 0, rate: null, maturing };
   const replies = rows.filter((r) => r.replied === 1).length;
-  return { sample: rows.length, rate: replies / rows.length };
+  return { sample: rows.length, rate: replies / rows.length, maturing };
 }
 
 function checkReplyRateGuard() {
@@ -89,7 +63,7 @@ function checkReplyRateGuard() {
   if (rate !== null && rate < s.replyRateFloor) {
     pause(
       `Reply-Rate ${(rate * 100).toFixed(0)}% liegt unter dem Minimum von ` +
-        `${(s.replyRateFloor * 100).toFixed(0)}% (letzte ${sample} Sends)`
+        `${(s.replyRateFloor * 100).toFixed(0)}% (letzte ${sample} reifen Sends)`
     );
   }
 }
@@ -162,7 +136,6 @@ async function sendTo(contact, step) {
       "UPDATE contacts SET status = 'sent', step = ?, last_sent_at = ? WHERE contact_id = ?"
     ).run(step, now, contact.contact_id);
     logEvent('info', `Gesendet an ${contact.contact_id} — Variante ${variant.id}, Step ${step}`);
-    await tag(contact.contact_id, TAG.sent);
     return true;
   } catch (e) {
     db.prepare(
@@ -181,6 +154,57 @@ async function sendTo(contact, step) {
     if (fails >= 5) pause(`${fails} Fehler in der letzten Stunde — API oder Nummer prüfen`);
     return false;
   }
+}
+
+/**
+ * Hängende Kontakte zurückholen.
+ *
+ * 'no_variant' entsteht, wenn im Moment des Sendens keine aktive Variante für
+ * den Step da war — etwa während der Pool umgebaut wird. 'error' entsteht bei
+ * einem API-Fehler. Beide Zustände waren bisher Sackgassen.
+ *
+ * Wichtig: kein Doppelversand. Wer schon eine Nachricht bekommen hat, geht
+ * nicht in die Warteschlange zurück, sondern auf seinen letzten erfolgreichen
+ * Step — dort greift die Follow-up-Logik wieder.
+ */
+export function requeueStuck() {
+  const stuck = db
+    .prepare("SELECT contact_id, status FROM contacts WHERE status IN ('no_variant', 'error')")
+    .all();
+
+  const lastGood = db.prepare(
+    'SELECT step, sent_at FROM sends WHERE contact_id = ? AND error IS NULL ORDER BY id DESC LIMIT 1'
+  );
+  const toQueued = db.prepare(
+    "UPDATE contacts SET status = 'queued', step = 0, last_sent_at = NULL, note = NULL WHERE contact_id = ?"
+  );
+  const toSent = db.prepare(
+    "UPDATE contacts SET status = 'sent', step = ?, last_sent_at = ?, note = NULL WHERE contact_id = ?"
+  );
+
+  let queued = 0;
+  let restored = 0;
+  const run = db.transaction((rows) => {
+    for (const r of rows) {
+      const good = lastGood.get(r.contact_id);
+      if (good) {
+        toSent.run(good.step, good.sent_at, r.contact_id);
+        restored++;
+      } else {
+        toQueued.run(r.contact_id);
+        queued++;
+      }
+    }
+  });
+  run(stuck);
+
+  if (stuck.length) {
+    logEvent(
+      'info',
+      `Requeue: ${queued} zurück in die Warteschlange, ${restored} auf den letzten erfolgreichen Step gesetzt`
+    );
+  }
+  return { found: stuck.length, queued, restored };
 }
 
 /** Ein Tick. Sendet maximal eine Nachricht — das Tempo macht der Gap. */
@@ -218,46 +242,7 @@ export async function tick() {
   return { action: ok ? 'sent' : 'failed', contactId: due.contact.contact_id, nextGapSeconds: gap / 1000 };
 }
 
-/**
- * Antwort auf ein Ja: die Details, die in der Erstnachricht bewusst fehlten.
- *
- * Hier darf ein Link stehen - die Konversation ist eroeffnet, der Empfaenger
- * hat darum gebeten. Genau deshalb enthaelt Step 1 keinen.
- *
- * Der Text ist eine normale Variante mit Step 3, im Editor zu bearbeiten wie
- * jede andere.
- */
-async function sendDetails(contact) {
-  const variant = pickVariant(3);
-  if (!variant) return false;
-
-  const body = render(variant.body, contact);
-  const now = Date.now();
-
-  if (settings().dryRun) {
-    logEvent('info', `DRY RUN — Details an ${contact.contact_id}: ${body.slice(0, 60)}`);
-    return true;
-  }
-
-  try {
-    const res = await sendSms({ contactId: contact.contact_id, message: body });
-    db.prepare(
-      `INSERT INTO sends (contact_id, variant_id, step, body, sent_at, message_id)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(contact.contact_id, variant.id, 3, body, now, res.messageId);
-    markVariantSent(variant.id);
-    return true;
-  } catch (e) {
-    db.prepare(
-      `INSERT INTO sends (contact_id, variant_id, step, body, sent_at, error)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(contact.contact_id, variant.id, 3, body, now, String(e.message).slice(0, 500));
-    logEvent('error', `Details an ${contact.contact_id} fehlgeschlagen: ${e.message}`);
-    return false;
-  }
-}
-
-/** Eingehende Nachricht verarbeiten — Antwort, Ja, Nein und Opt-out. */
+/** Eingehende Nachricht verarbeiten — Antwort und Opt-out. */
 export async function handleInbound({ contactId, text }) {
   const contact = db.prepare('SELECT * FROM contacts WHERE contact_id = ?').get(contactId);
   if (!contact) return { known: false };
@@ -275,36 +260,32 @@ export async function handleInbound({ contactId, text }) {
     markVariantReplied(lastSend.variant_id);
   }
 
+  const dryRun = settings().dryRun;
+
   if (isStop) {
     db.prepare(
       "UPDATE contacts SET status = 'opted_out', opted_out_at = ?, replied_at = COALESCE(replied_at, ?) WHERE contact_id = ?"
     ).run(now, now, contactId);
     logEvent('info', `Opt-out von ${contactId}: "${clean.slice(0, 40)}"`);
-    await tag(contactId, TAG.optedOut);
+    if (!dryRun) {
+      try {
+        await addTags(contactId, ['cha08-opted-out']);
+      } catch (e) {
+        logEvent('warn', `Tag cha08-opted-out fehlgeschlagen: ${e.message}`);
+      }
+    }
     return { known: true, optedOut: true };
   }
 
   db.prepare("UPDATE contacts SET status = 'replied', replied_at = ? WHERE contact_id = ?").run(now, contactId);
   logEvent('info', `Antwort von ${contactId} — kein Follow-up mehr, Konversation ist offen`);
-  await tag(contactId, TAG.replied);
-
-  // Ein klares Nein: markieren und schweigen. Kein "schade", kein Nachfassen -
-  // das ist der Unterschied zwischen respektiert und belaestigt.
-  if (matches(clean, NO_WORDS)) {
-    await tag(contactId, TAG.no);
-    logEvent('info', `Nein von ${contactId}`);
-    return { known: true, replied: true, answer: 'no' };
+  if (!dryRun) {
+    try {
+      await addTags(contactId, ['cha08-replied']);
+    } catch (e) {
+      logEvent('warn', `Tag cha08-replied fehlgeschlagen: ${e.message}`);
+    }
   }
-
-  // Ein klares Ja: Tag setzen und die Details schicken. Fehlt die Step-3-
-  // Variante, antwortet ein Mensch - besser als eine leere SMS.
-  if (matches(clean, YES_WORDS)) {
-    await tag(contactId, TAG.yes);
-    const sent = await sendDetails(contact);
-    logEvent('info', `Ja von ${contactId}${sent ? ' — Details verschickt' : ' — keine Step-3-Variante hinterlegt'}`);
-    return { known: true, replied: true, answer: 'yes', detailsSent: sent };
-  }
-
   return { known: true, replied: true };
 }
 
@@ -317,8 +298,9 @@ export function stats() {
 
   const totalSends = db.prepare('SELECT COUNT(*) AS c FROM sends WHERE error IS NULL').get().c;
   const errors = db.prepare('SELECT COUNT(*) AS c FROM sends WHERE error IS NOT NULL').get().c;
-  const { sample, rate } = replyRate();
+  const { sample, rate, maturing } = replyRate();
   const today = localDay();
+  const stuck = (byStatus.no_variant || 0) + (byStatus.error || 0);
 
   return {
     paused: isPaused(),
@@ -339,6 +321,10 @@ export function stats() {
     replyRate: rate,
     replyRateSample: sample,
     replyRateFloor: s.replyRateFloor,
+    replyRateMinSample: s.replyRateMinSample,
+    replyRateMaturityHours: s.replyRateMaturityHours,
+    maturing,
+    stuck,
     nextSendAt: Number(getState('next_send_at', '0')) || null,
     contacts: byStatus,
   };
