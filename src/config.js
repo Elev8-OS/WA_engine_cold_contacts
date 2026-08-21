@@ -82,6 +82,8 @@ export const config = {
     adminKey: process.env.ADMIN_KEY || '',
     dryRun: bool('DRY_RUN', false),
     startPaused: bool('START_PAUSED', true),
+    // Ringpuffer für das Log. Sends werden nie beschnitten.
+    eventLogLimit: num('EVENT_LOG_LIMIT', 5000),
   },
 };
 

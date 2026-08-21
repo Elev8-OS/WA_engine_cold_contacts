@@ -78,10 +78,15 @@ export function setState(key, value) {
 
 const logStmt = db.prepare('INSERT INTO events (at, level, message) VALUES (?, ?, ?)');
 
+const trimStmt = db.prepare('DELETE FROM events WHERE id <= ?');
+
 export function logEvent(level, message) {
-  logStmt.run(Date.now(), level, message);
+  const info = logStmt.run(Date.now(), level, message);
   const stamp = new Date().toISOString();
   console.log(`[${stamp}] ${level.toUpperCase()} ${message}`);
-  // Ringpuffer — die letzten 500 Einträge reichen für den Betrieb.
-  db.exec('DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 500)');
+  // Ringpuffer, damit das Volume nicht volläuft. Beschnitten wird über die
+  // Id-Grenze statt über eine Unterabfrage — das kostet bei 5000 Zeilen nichts.
+  // Nur jeder 50. Aufruf räumt auf; dazwischen darf der Puffer leicht überlaufen.
+  const id = Number(info.lastInsertRowid);
+  if (id % 50 === 0) trimStmt.run(id - config.ops.eventLogLimit);
 }
