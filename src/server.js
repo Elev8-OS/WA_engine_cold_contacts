@@ -5,6 +5,7 @@ import { handleInbound, stats, pause, resume, requeueStuck } from './campaign.js
 import { poolStats, upsertVariants, listVariants, deleteVariant } from './pool.js';
 import { settings, settingsDetail, setSettings, resetSetting } from './settings.js';
 import { getBrief, generateVariants } from './generate.js';
+import { listSends, listEvents } from './history.js';
 import { isAuthorized, isLoggedIn, setSessionCookie, clearSessionCookie } from './auth.js';
 import { dashboardHtml } from './pages/dashboard.js';
 import { audiencePageHtml } from './pages/audience.js';
@@ -28,7 +29,7 @@ export function createServer() {
     next();
   };
 
-  // ── Login ──────────────────────────────────────────────────────────────────
+  // ── Login ───────────────────────────────────────────────────────────────
   // Einmal anmelden, danach ein HttpOnly-Cookie für 30 Tage. Der Key muss nicht
   // mehr auf jeder Seite neu eingegeben werden.
   app.post('/login', (req, res) => {
@@ -49,7 +50,7 @@ export function createServer() {
 
   app.get('/api/me', (req, res) => res.json({ loggedIn: isLoggedIn(req) }));
 
-  // ── Inbound-Webhook aus GHL ─────────────────────────────────────────────────────
+  // ── Inbound-Webhook aus GHL ──────────────────────────────────────────────
   // GHL: Automation → Workflow mit Trigger "Customer Replied"
   //      → Action Webhook auf POST https://<app>/webhooks/ghl/inbound
   app.post('/webhooks/ghl/inbound', async (req, res) => {
@@ -70,7 +71,7 @@ export function createServer() {
     }
   });
 
-  // ── Status ────────────────────────────────────────────────────────────────
+  // ── Status ──────────────────────────────────────────────────────────
   app.get('/api/status', (_req, res) => {
     res.json({
       ...stats(),
@@ -88,9 +89,34 @@ export function createServer() {
     });
   });
 
+  // ── Verlauf zum Blättern ────────────────────────────────────────────
+  // Kein LIMIT 25 mehr: limit (max 500), offset, Filter und Suche. Die Antwort
+  // enthält die Gesamtzahl, damit die Oberfläche weiss, wie weit sie kommt.
+  app.get('/api/sends', requireAdmin, (req, res) => {
+    res.json(
+      listSends({
+        limit: req.query.limit,
+        offset: req.query.offset,
+        filter: req.query.filter,
+        q: req.query.q,
+      })
+    );
+  });
+
+  app.get('/api/events', requireAdmin, (req, res) => {
+    res.json(
+      listEvents({
+        limit: req.query.limit,
+        offset: req.query.offset,
+        level: req.query.level,
+        q: req.query.q,
+      })
+    );
+  });
+
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-  // ── Admin ─────────────────────────────────────────────────────────────────
+  // ── Admin ──────────────────────────────────────────────────────────
   app.post('/admin/pause', requireAdmin, (req, res) => {
     pause(req.body?.reason || 'manuell über API');
     res.json({ paused: true });
@@ -143,7 +169,7 @@ export function createServer() {
     res.json({ imported: n });
   });
 
-  // ── Zielgruppe ───────────────────────────────────────────────────────────
+  // ── Zielgruppe ───────────────────────────────────────────────────
   app.get('/api/audience', (_req, res) => res.json(getAudience()));
 
   app.get('/api/audience/smartlists', requireAdmin, async (_req, res) => {
@@ -200,7 +226,7 @@ export function createServer() {
     }
   });
 
-  // ── Einstellungen ─────────────────────────────────────────────────────────
+  // ── Einstellungen ──────────────────────────────────────────────────
   app.get('/api/settings', (_req, res) => {
     res.json({ values: settings(), detail: settingsDetail() });
   });
@@ -221,7 +247,7 @@ export function createServer() {
     }
   });
 
-  // ── Varianten-Generator ────────────────────────────────────────────────────
+  // ── Varianten-Generator ───────────────────────────────────────────────
   app.get('/api/brief', requireAdmin, (_req, res) => res.json(getBrief()));
 
   app.post('/admin/generate', requireAdmin, async (req, res) => {
@@ -240,7 +266,7 @@ export function createServer() {
     }
   });
 
-  // ── Nachrichten-Pool ──────────────────────────────────────────────────────
+  // ── Nachrichten-Pool ─────────────────────────────────────────────────
   app.get('/api/pool', requireAdmin, (_req, res) => res.json({ variants: listVariants() }));
 
   app.delete('/admin/pool/:id', requireAdmin, (req, res) => {
@@ -250,7 +276,7 @@ export function createServer() {
     res.json({ deleted: req.params.id });
   });
 
-  // ── Seiten ────────────────────────────────────────────────────────────────
+  // ── Seiten ──────────────────────────────────────────────────────────
   app.get('/', (req, res) => {
     res.type('html').send(dashboardHtml({ loggedIn: isLoggedIn(req) }));
   });
