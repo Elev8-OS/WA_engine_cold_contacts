@@ -74,6 +74,7 @@ export const config = {
     replyRateWindow: num('REPLY_RATE_WINDOW', 25),
     replyRateFloor: num('REPLY_RATE_FLOOR', 0.2),
     replyRateMinSample: num('REPLY_RATE_MIN_SAMPLE', 15),
+    replyRateMaturityHours: num('REPLY_RATE_MATURITY_HOURS', 24),
   },
   ops: {
     port: num('PORT', 3000),
