@@ -27,6 +27,8 @@ export function settingsPageHtml({ loggedIn = false } = {}) {
   .del { border-color:#ef444455; background:#ef444414; color:#f87171; }
   .bar2 { position:sticky; bottom:0; background:#0b0b0cf2; padding:14px 0 4px;
           border-top:1px solid #24242a; margin-top:8px; }
+  .inline { font-size:12px; margin-left:10px; }
+  .inline.bad { color:#f87171; } .inline.ok { color:#4ade80; }
 </style></head><body>
 
 <h1>Einstellungen</h1>
@@ -42,9 +44,8 @@ ${loggedIn ? `<div class="card">
   <h2>Kampagne beschreiben</h2>
   <div class="sub" style="margin:0 0 4px">
     Thema, Datum, Ort, Zielgruppe, was du erreichen willst. Je konkreter, desto
-    brauchbarer die Varianten. Mit „Beschreibung speichern" bleibt der Text für
-    das nächste Mal stehen. Die erzeugten Varianten landen unten als Vorschlag
-    — gespeichert sind sie erst mit „Nachrichten speichern".
+    brauchbarer die Varianten. Das Ergebnis landet unten als Vorschlag im Editor —
+    gespeichert wird nichts, bis du auf „Nachrichten speichern" klickst.
   </div>
   <textarea id="brief" placeholder="Beispiel: CHA-08 am 28. August, im OXO The Living. Zielgruppe sind Villa-Owner und Manager, die ich am Bali Villa Connect getroffen habe. Thema: echte Occupancy- und ADR-Zahlen aus Bali-Villen und was die besten Betriebe anders machen. Plätze beschränkt. Ziel: sie sollen antworten, damit ich ihnen die Details schicken kann."></textarea>
   <div class="row" style="margin-top:12px">
@@ -54,7 +55,6 @@ ${loggedIn ? `<div class="card">
       <div><label>Step 2</label><input id="n2" type="number" min="0" max="8" value="3"></div>
     </div>
   </div>
-  <button id="savebrief">Beschreibung speichern</button>
   <button id="gen">Varianten schreiben</button>
   <span id="genstate" class="dim" style="font-size:12px; margin-left:8px"></span>
 </div>
@@ -68,7 +68,7 @@ ${loggedIn ? `<div class="card">
   </div>
   <div id="vars"></div>
   <button id="add" class="ghost">+ Variante</button>
-  <div class="bar2"><button id="saveVars">Nachrichten speichern</button></div>
+  <div class="bar2"><button id="saveVars">Nachrichten speichern</button><span id="varmsg" class="inline"></span></div>
 </div>
 
 <div class="card">
@@ -78,7 +78,7 @@ ${loggedIn ? `<div class="card">
     Startwert aus den Railway-Variablen.
   </div>
   <div id="fields"></div>
-  <div class="bar2"><button id="saveSet">Einstellungen speichern</button></div>
+  <div class="bar2"><button id="saveSet">Einstellungen speichern</button><span id="setmsg" class="inline"></span></div>
 </div>` : ''}
 
 <script>
@@ -90,6 +90,17 @@ const out = $('out');
 const show = (v) => { out.hidden = false; out.textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); };
 const need = () => true;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// Eine abgelehnte Speicherung muss dort sichtbar sein, wo geklickt wurde —
+// nicht nur oben in der Box, die beim Speichern ausserhalb des Bildes liegt.
+function flash(id, text, bad) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'inline ' + (bad ? 'bad' : 'ok');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.textContent = ''; el.className = 'inline'; }, 8000);
+}
 
 async function call(path, opts = {}) {
   const res = await fetch(path, {
@@ -217,29 +228,6 @@ $('add').onclick = () => {
   $('vars').appendChild(varRow({ id: '__new' + newCount, step: 1, label: '', body: '', active: true }));
 };
 
-$('savebrief').onclick = async () => {
-  const btn = $('savebrief');
-  const before = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'speichert \u2026';
-  try {
-    await call('/admin/brief', {
-      method: 'POST',
-      body: JSON.stringify({
-        brief: $('brief').value,
-        language: $('lang').value.trim() || 'Englisch',
-        countStep1: parseInt($('n1').value, 10),
-        countStep2: parseInt($('n2').value, 10),
-      }),
-    });
-    show('Beschreibung gespeichert. Sie steht beim n\u00e4chsten \u00d6ffnen wieder da.');
-  } catch (e) {
-    show('Fehler: ' + e.message);
-  }
-  btn.disabled = false;
-  btn.textContent = before;
-};
-
 $('gen').onclick = async () => {
   if (!need()) return;
   const btn = $('gen');
@@ -281,8 +269,8 @@ $('saveVars').onclick = async () => {
   for (const d of rows) {
     const id = d.querySelector('.v-id').value.trim();
     const bodyText = d.querySelector('.v-body').value.trim();
-    if (!id || id.startsWith('__new')) { show('Jede Variante braucht eine eigene ID (z. B. s1-invite).'); return; }
-    if (!bodyText) { show('Variante ' + id + ' hat keinen Text.'); return; }
+    if (!id || id.startsWith('__new')) { const m = 'Jede Variante braucht eine eigene ID (z. B. s1-invite).'; show(m); flash('varmsg', m, true); return; }
+    if (!bodyText) { const m = 'Variante ' + id + ' hat keinen Text.'; show(m); flash('varmsg', m, true); return; }
     list.push({
       id,
       step: parseInt(d.querySelector('.v-step').value, 10) || 1,
@@ -293,10 +281,17 @@ $('saveVars').onclick = async () => {
   }
   const ids = list.map(v => v.id);
   const dupe = ids.find((v, i) => ids.indexOf(v) !== i);
-  if (dupe) { show('ID doppelt: ' + dupe); return; }
+  if (dupe) { const m = 'ID doppelt: ' + dupe; show(m); flash('varmsg', m, true); return; }
   show('speichere …');
-  try { const r = await call('/admin/pool', { method: 'POST', body: JSON.stringify(list) }); await loadAll(); show(r.upserted + ' Varianten gespeichert.'); }
-  catch (e) { show('Fehler: ' + e.message); }
+  try {
+    const r = await call('/admin/pool', { method: 'POST', body: JSON.stringify(list) });
+    await loadAll();
+    show(r.upserted + ' Varianten gespeichert.');
+    flash('varmsg', r.upserted + ' gespeichert', false);
+  } catch (e) {
+    show('Fehler: ' + e.message);
+    flash('varmsg', e.message, true);
+  }
 };
 
 $('saveSet').onclick = async () => {
@@ -308,8 +303,15 @@ $('saveSet').onclick = async () => {
     patch[row.dataset.key] = row.dataset.type === 'bool' ? el.checked : el.value;
   }
   show('speichere …');
-  try { await call('/admin/settings', { method: 'POST', body: JSON.stringify(patch) }); await loadAll(); show('Einstellungen gespeichert — gilt ab sofort.'); }
-  catch (e) { show('Fehler: ' + e.message); }
+  try {
+    await call('/admin/settings', { method: 'POST', body: JSON.stringify(patch) });
+    await loadAll();
+    show('Einstellungen gespeichert — gilt ab sofort.');
+    flash('setmsg', 'gespeichert, gilt ab sofort', false);
+  } catch (e) {
+    show('Fehler: ' + e.message);
+    flash('setmsg', 'NICHT gespeichert: ' + e.message, true);
+  }
 };
 ` : ''}
 </script>
