@@ -9,6 +9,103 @@ Nichts offen.
 
 ---
 
+## [1.6.0] — 2026-08-21
+
+Drei Dinge, die der Live-Betrieb aufgedeckt hat. Alle drei sind Konstruktionsfehler
+gewesen, nicht Bedienfehler.
+
+### Behoben
+
+- **Die Reply-Rate-Bremse hat Nachrichten mitgezählt, die eine Stunde alt waren.**
+  Bei Kaltkontakt kommen Antworten über Tage, nicht über Minuten — die Bremse hat
+  also für eine Rate pausiert, die nur bedeutete "das hat noch niemand gelesen".
+  Sends, die jünger sind als **Antworten reifen lassen (Stunden)** (neu, Default 24),
+  zählen jetzt nicht in die Rate. Die Dashboard-Kachel zeigt zusätzlich, wie viele
+  Sends noch reifen.
+- **`no_variant` und `error` waren Endstationen.** Ein kurz leerer Pool hat einen
+  Kontakt dauerhaft geparkt, ohne Weg zurück. Der neue Knopf **hängende
+  zurückholen** (nur sichtbar, wenn es welche gibt) löst das ohne Doppelversand:
+  ein Kontakt mit erfolgreichem Send geht auf seinen letzten erfolgreichen Step, damit
+  die Follow-up-Logik ihn wieder aufnimmt; nur wer nie etwas erhalten hat, geht zurück
+  in die Warteschlange.
+- **Ein abgelehnter Einstellungs-Patch sah aus wie ein erfolgreicher.** Die
+  Fehlermeldung landete oben auf der Seite, der Speichern-Knopf steht unten — man
+  scrollt weg und glaubt, es sei gespeichert. Beide Speichern-Knöpfe melden das
+  Ergebnis jetzt direkt am Knopf, rot bei Fehler. Betrifft konkret den Fall
+  `replyRateMinSample > replyRateWindow`, der genau so still liegengeblieben ist.
+
+### Hinzugefügt
+
+- **`POST /admin/requeue`** und `requeueStuck()` in `campaign.js`.
+- **`REPLY_RATE_MATURITY_HOURS`** als Startwert, einstellbar unter `/settings`.
+- `stats()` liefert zusätzlich `replyRateMinSample`, `replyRateMaturityHours`,
+  `maturing` und `stuck`.
+- **`test/guards.test.mjs`** — 21 Checks: Reifezeit-Filterung, die Bremse, die auf
+  unreifen Sends nicht greift, und alle vier Requeue-Fälle.
+
+### Wichtig zu wissen
+
+- Eine Reply-Rate von 0 Prozent in den ersten 24 Stunden ist ab jetzt kein Grund zur
+  Sorge und kein Grund zum Pausieren — sie ist der erwartete Zustand.
+
+---
+
+## [1.5.0] — 2026-08-20
+
+Was nach der Antwort passiert. Vorher endete die Automatik beim Reply; jetzt wird
+Ja von Nein unterschieden und in GHL sichtbar gemacht.
+
+### Hinzugefügt
+
+- **Ja/Nein-Erkennung im Inbound-Webhook.** Ein Ja löst die Detail-Nachricht aus,
+  ein Nein wird respektiert und nicht weiterverfolgt.
+- **Tags mit Kanal im Namen** — `cha08-sms-sent`, `cha08-sms-yes`, `cha08-sms-no`,
+  `cha08-sms-replied`, `cha08-sms-opted-out`. Der Kanal steht im Tag, weil dieselbe
+  Kampagne später auch über einen anderen Kanal laufen kann und die Auswertung
+  sonst nicht mehr trennbar ist.
+- **Knopf "Beschreibung speichern"** auf `/settings` samt Route, damit der Brief
+  auch ohne einen Generator-Lauf erhalten bleibt.
+
+---
+
+## [1.4.0] — 2026-08-20
+
+Bedienbarkeit. Scharfschaltung und Notbremse als Knopf, und der Admin-Key muss
+nicht mehr auf jeder Seite eingegeben werden.
+
+### Hinzugefügt
+
+- **Login statt Key-Feld.** `POST /login` setzt ein HttpOnly-Cookie mit
+  `SameSite=Lax` für 30 Tage. Das Cookie ist eine HMAC-signierte Ablaufzeit — kein
+  Session-Store, und ein Neustart meldet niemanden ab. Der Vergleich läuft über
+  `timingSafeEqual`, das `Secure`-Flag wird aus `x-forwarded-proto` entschieden,
+  weil die Anfrage hinter dem Railway-Proxy intern per http ankommt.
+  Der Header `x-admin-key` funktioniert unverändert weiter, damit curl und
+  Automatisierung nichts merken.
+- **Scharfschaltung und Notbremse** oben im Dashboard, mit Zwei-Klick-Bestätigung
+  statt Browser-Dialog: der erste Klick entsichert, der zweite löst aus, nach fünf
+  Sekunden sichert sich der Knopf selbst wieder. Der Freigabe-Knopf sagt, was er
+  wirklich tut — im Testmodus "Freigeben (Testmodus)", live die Warnung, dass die
+  erste echte SMS innerhalb von 30 Sekunden rausgeht.
+
+### Geändert
+
+- **`server.js` von rund 900 auf 250 Zeilen.** Die Seiten liegen jetzt in
+  `src/pages/*.js`, `server.js` enthält nur noch Routen.
+- **Kein Meta-Refresh mehr.** Der Reload läuft über JS und überspringt sich
+  selbst, solange ein Eingabefeld Fokus oder Inhalt hat — die Seite löscht nicht
+  mehr, was man gerade tippt.
+- Alle drei Seiten laden ihre Daten mit einer Session von selbst und zeigen ohne
+  Session eine Login-Karte.
+
+### Sicherheit
+
+- Der Key wanderte vorher bei jeder Aktion durch die Zwischenablage. Das ist nicht
+  nur unbequem, es ist schlechter: ein Secret, das den ganzen Tag im Clipboard liegt,
+  landet irgendwann im falschen Fenster.
+
+---
+
 ## [1.3.0] — 2026-08-20
 
 Die Nachrichten schreiben sich selbst. Kampagne einmal beschreiben, das Modell
