@@ -9,6 +9,44 @@ Nichts offen.
 
 ---
 
+## [1.7.0] — 2026-08-21
+
+Blättern statt abschneiden. Das Dashboard hat die letzten 20 Sends und 15 Log-Zeilen
+gezeigt, alles Ältere war da, aber nicht erreichbar.
+
+### Hinzugefügt
+
+- **Pager unter der Sends-Tabelle und unter dem Log.** Seitengrösse 25 / 50 / 100 / 250,
+  vor und zurück, Sprung auf die erste Seite, und rechts steht immer, was man gerade
+  sieht: „26–50 von 1.240".
+- **Filter und Suche.** Sends: alle, nur mit Antwort, ohne Antwort, nur Fehler; Suche
+  über Vorname, Kontakt-ID und Varianten-ID. Log: nach Level, Suche in der Meldung.
+- **`GET /api/sends` und `GET /api/events`** mit `limit` (max 500), `offset`, Filter und
+  `q`. Beide liefern die Gesamtzahl mit, damit die Oberfläche weiss, wie weit sie kommt.
+  Beide brauchen eine Anmeldung — der Verlauf enthält Kontaktdaten.
+- **`src/history.js`** als einzige Stelle für diese Abfragen, plus `test/history.test.mjs`
+  mit 37 Checks: Grenzen der Seitengrösse, Blättern ohne Lücke und ohne Doppelte,
+  jeder Filter, Suche, kombiniert, und der Ringpuffer des Logs.
+- **Der Sendetext steht als Tooltip auf der Varianten-Spalte.** Man sieht, was wirklich
+  rausgegangen ist, ohne die Tabelle zu verbreitern.
+- **`EVENT_LOG_LIMIT`**, Default 5000 statt fest 500. Beschnitten wird über die
+  Id-Grenze und nur bei jedem 50. Eintrag, statt bei jedem Log-Aufruf mit einer
+  Unterabfrage über die ganze Tabelle.
+
+### Geändert
+
+- **Der Auto-Reload hält sich zurück.** Solange geblättert, gefiltert oder gesucht
+  wird — oder der Cursor in einem Feld steht — lädt die Seite nicht neu und wirft
+  einen nicht auf Seite 1 zurück.
+- Ohne Anmeldung zeigt die Seite nur die erste Seite und darunter die Gesamtzahl.
+
+### Wichtig zu wissen
+
+- **Sends werden nie beschnitten.** Der komplette Versandverlauf bleibt in der Datenbank
+  auf dem Volume, egal wie lang die Kampagne läuft. Nur das Log ist ein Ringpuffer.
+
+---
+
 ## [1.6.0] — 2026-08-21
 
 Drei Dinge, die der Live-Betrieb aufgedeckt hat. Alle drei sind Konstruktionsfehler
