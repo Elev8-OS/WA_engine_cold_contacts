@@ -83,6 +83,7 @@ export function dashboardHtml({ loggedIn = false } = {}) {
                  cursor:pointer; border:1px solid; background:transparent; }
   #go { border-color:#22c55e66; background:#22c55e18; color:#4ade80; }
   #stop { border-color:#ef444466; background:#ef444418; color:#f87171; }
+  .ghost2 { border-color:#2c2c34; background:#18181b; color:#a9a9b2; }
   .ctrl button:disabled { opacity:.4; cursor:default; }
   #ctrlmsg { font-size:12px; color:#8b8b93; flex:1 1 100%; margin:0; }
   #logincard { background:#141416; border:1px solid #24242a; border-radius:10px;
@@ -115,7 +116,9 @@ ${loggedIn ? `<div class="ctrl">
   <button id="go"${s.paused ? '' : ' disabled'}>${
     s.dryRun ? 'Freigeben (Testmodus)' : 'Scharf schalten'
   }</button>
-  <button id="stop"${s.paused ? ' disabled' : ''}>Notbremse</button>
+  <button id="stop"${s.paused ? ' disabled' : ''}>Notbremse</button>${
+    s.stuck ? `<button id="requeue" class="ghost2">${s.stuck} hängende zurückholen</button>` : ''
+  }
   <p id="ctrlmsg">${
     s.paused
       ? s.dryRun
@@ -133,7 +136,9 @@ ${loggedIn ? `<div class="ctrl">
     <div class="bar"><i style="width:${Math.min(100, (s.sentToday / Math.max(1, s.dailyCap)) * 100)}%"></i></div></div>
   <div class="card"><div class="k">Reply-Rate</div>
     <div class="v" style="color:${rateColor}">${pct(s.replyRate)}</div>
-    <div class="n">letzte ${s.replyRateSample} Sends · Minimum ${pct(s.replyRateFloor)}</div></div>
+    <div class="n">${s.replyRateSample} reife Sends (Bremse ab ${s.replyRateMinSample}) · Minimum ${pct(s.replyRateFloor)}${
+      s.maturing ? `<br>${s.maturing} reifen noch (${s.replyRateMaturityHours} h)` : ''
+    }</div></div>
   <div class="card"><div class="k">Sends total</div>
     <div class="v">${s.totalSends}</div>
     <div class="n">${s.errors} Fehler</div></div>
@@ -262,6 +267,21 @@ arm(el('stop'), 'Notbremse', async () => {
     setTimeout(() => location.reload(), 1200);
   } catch (e) { msg.textContent = 'Fehler: ' + e.message; }
 });
+
+const rq = el('requeue');
+if (rq) rq.onclick = async () => {
+  rq.disabled = true;
+  msg.textContent = 'hole zurück …';
+  try {
+    const r = await post('/admin/requeue');
+    msg.textContent = r.found + ' gefunden: ' + r.queued + ' zurück in die Warteschlange, '
+      + r.restored + ' auf den letzten erfolgreichen Step (kein Doppelversand).';
+    setTimeout(() => location.reload(), 2500);
+  } catch (e) {
+    msg.textContent = 'Fehler: ' + e.message;
+    rq.disabled = false;
+  }
+};
 
 setInterval(() => location.reload(), 20000);
 ` : ''}

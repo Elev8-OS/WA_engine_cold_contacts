@@ -1,7 +1,7 @@
 import express from 'express';
 import { config } from './config.js';
-import { db, logEvent, setState } from './db.js';
-import { handleInbound, stats, pause, resume } from './campaign.js';
+import { db, logEvent } from './db.js';
+import { handleInbound, stats, pause, resume, requeueStuck } from './campaign.js';
 import { poolStats, upsertVariants, listVariants, deleteVariant } from './pool.js';
 import { settings, settingsDetail, setSettings, resetSetting } from './settings.js';
 import { getBrief, generateVariants } from './generate.js';
@@ -99,6 +99,10 @@ export function createServer() {
   app.post('/admin/resume', requireAdmin, (_req, res) => {
     resume();
     res.json({ paused: false });
+  });
+
+  app.post('/admin/requeue', requireAdmin, (_req, res) => {
+    res.json(requeueStuck());
   });
 
   app.post('/admin/pool', requireAdmin, (req, res) => {
@@ -219,33 +223,6 @@ export function createServer() {
 
   // ── Varianten-Generator ────────────────────────────────────────────────────
   app.get('/api/brief', requireAdmin, (_req, res) => res.json(getBrief()));
-
-  // Brief speichern, ohne zu generieren.
-  //
-  // Bis hierher wurde der Brief nur als Nebenwirkung des Generators abgelegt:
-  // wer ihn anpasste und die Seite neu lud, fand den alten Stand vor. Einen
-  // Text überarbeitet man aber mehrmals, bevor man das Modell darauf loslässt.
-  app.post('/admin/brief', requireAdmin, (req, res) => {
-    try {
-      const b = req.body || {};
-      const text = String(b.brief ?? '').trim();
-      setState('campaign_brief', text);
-      if (b.language !== undefined) {
-        setState('campaign_language', String(b.language).trim() || 'Englisch');
-      }
-      if (b.countStep1 !== undefined) {
-        setState('campaign_count_step1', String(Math.min(8, Math.max(1, Number(b.countStep1) || 4))));
-      }
-      if (b.countStep2 !== undefined) {
-        setState('campaign_count_step2', String(Math.min(8, Math.max(0, Number(b.countStep2) || 0))));
-      }
-      logEvent('info', `Brief gespeichert (${text.length} Zeichen)`);
-      res.json(getBrief());
-    } catch (e) {
-      logEvent('warn', `Brief speichern: ${e.message}`);
-      res.status(400).json({ error: e.message });
-    }
-  });
 
   app.post('/admin/generate', requireAdmin, async (req, res) => {
     try {
