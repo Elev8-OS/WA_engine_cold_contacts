@@ -1,22 +1,20 @@
-import { db } from '../db.js';
 import { stats } from '../campaign.js';
 import { poolStats } from '../pool.js';
 import { settings } from '../settings.js';
 import { getAudience } from '../audience.js';
+import { listSends, listEvents } from '../history.js';
 import { loginCard, LOGIN_JS, LOGOUT_JS, LOGOUT_LINK } from './auth-ui.js';
+
+const PAGE = 25;
 
 export function dashboardHtml({ loggedIn = false } = {}) {
   const s = stats();
   const a = getAudience();
   const pool = poolStats();
-  const sends = db
-    .prepare(
-      `SELECT s.sent_at, s.contact_id, s.variant_id, s.step, s.replied, s.error, c.first_name
-       FROM sends s LEFT JOIN contacts c ON c.contact_id = s.contact_id
-       ORDER BY s.id DESC LIMIT 20`
-    )
-    .all();
-  const events = db.prepare('SELECT at, level, message FROM events ORDER BY id DESC LIMIT 15').all();
+  const sendPage = listSends({ limit: PAGE });
+  const eventPage = listEvents({ limit: PAGE });
+  const sends = sendPage.rows;
+  const events = eventPage.rows;
 
   const esc = (v) =>
     String(v ?? '').replace(/[&<>"']/g, (c) =>
@@ -95,6 +93,16 @@ export function dashboardHtml({ loggedIn = false } = {}) {
   #logincard button { padding:9px 16px; border-radius:8px; border:1px solid #f6bb1255;
                       background:#f6bb1218; color:#f6bb12; font-size:13px; font-weight:600;
                       cursor:pointer; margin-left:8px; }
+  .pager { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0 0;
+           font-size:12px; color:#8b8b93; }
+  .pager select, .pager input { padding:6px 9px; background:#0f0f11; color:#e7e7e9;
+           border:1px solid #2c2c34; border-radius:7px; font-size:12px; }
+  .pager input { width:150px; }
+  .pager button { padding:6px 12px; border-radius:7px; border:1px solid #2c2c34;
+           background:#18181b; color:#a9a9b2; font-size:12px; cursor:pointer; }
+  .pager button:disabled { opacity:.35; cursor:default; }
+  .pager .count { margin-left:auto; font-variant-numeric:tabular-nums; }
+  .pager .sp { color:#3a3a42; }
 </style></head><body>
 
 <h1>SMS Rotator <span class="pill">${statusLabel}</span></h1>
@@ -171,15 +179,16 @@ ${pool
   .join('')}
 </table>
 
-<h2>Letzte Sends</h2>
-<table><tr><th>Zeit</th><th>Kontakt</th><th>Variante</th><th>Step</th><th>Antwort</th></tr>
+<h2>Sends</h2>
+<table><thead><tr><th>Zeit</th><th>Kontakt</th><th>Variante</th><th>Step</th><th>Antwort</th></tr></thead>
+<tbody id="sendrows">
 ${
   sends.length
     ? sends
         .map(
           (r) => `<tr><td class="mono">${time(r.sent_at)}</td>
       <td>${esc(r.first_name || r.contact_id)}</td>
-      <td class="mono">${esc(r.variant_id)}</td><td>${r.step}</td>
+      <td class="mono" title="${esc(r.body)}">${esc(r.variant_id)}</td><td>${r.step}</td>
       <td>${
         r.error
           ? `<span class="bad">Fehler</span>`
@@ -191,10 +200,29 @@ ${
         .join('')
     : '<tr><td colspan="5" class="dim">Noch nichts gesendet.</td></tr>'
 }
-</table>
+</tbody></table>
+${
+  loggedIn
+    ? `<div class="pager" id="sendpager">
+  <select data-role="filter">
+    <option value="all">alle</option>
+    <option value="replied">nur mit Antwort</option>
+    <option value="open">ohne Antwort</option>
+    <option value="errors">nur Fehler</option>
+  </select>
+  <input data-role="q" placeholder="Name, ID, Variante">
+  <select data-role="size"><option>25</option><option>50</option><option>100</option><option>250</option></select>
+  <button data-role="first" disabled>&laquo;</button>
+  <button data-role="prev" disabled>zurück</button>
+  <button data-role="next">weiter</button>
+  <span class="count" data-role="count">1–${sends.length} von ${sendPage.total}</span>
+</div>`
+    : `<div class="sub" style="margin-top:8px">${sendPage.total} Sends insgesamt — zum Blättern anmelden.</div>`
+}
 
 <h2>Log</h2>
-<table><tr><th>Zeit</th><th>Level</th><th>Meldung</th></tr>
+<table><thead><tr><th>Zeit</th><th>Level</th><th>Meldung</th></tr></thead>
+<tbody id="logrows">
 ${
   events.length
     ? events
@@ -206,9 +234,27 @@ ${
         .join('')
     : '<tr><td colspan="3" class="dim">Kein Log.</td></tr>'
 }
-</table>
+</tbody></table>
+${
+  loggedIn
+    ? `<div class="pager" id="logpager">
+  <select data-role="filter">
+    <option value="all">alle Level</option>
+    <option value="info">info</option>
+    <option value="warn">warn</option>
+    <option value="error">error</option>
+  </select>
+  <input data-role="q" placeholder="Meldung suchen">
+  <select data-role="size"><option>25</option><option>50</option><option>100</option><option>250</option></select>
+  <button data-role="first" disabled>&laquo;</button>
+  <button data-role="prev" disabled>zurück</button>
+  <button data-role="next">weiter</button>
+  <span class="count" data-role="count">1–${events.length} von ${eventPage.total}</span>
+</div>`
+    : `<div class="sub" style="margin-top:8px">${eventPage.total} Log-Zeilen — zum Blättern anmelden.</div>`
+}
 
-<div class="sub" style="margin-top:24px">Seite lädt alle 20 Sekunden neu.</div>
+<div class="sub" style="margin-top:24px">Seite lädt alle 20 Sekunden neu — ausser beim Blättern, Filtern oder Suchen.</div>
 
 <script>
 ${loggedIn ? '' : LOGIN_JS}
@@ -283,7 +329,91 @@ if (rq) rq.onclick = async () => {
   }
 };
 
-setInterval(() => location.reload(), 20000);
+// ── Blättern in Sends und Log ─────────────────────────────────────────
+// Der Server rendert die erste Seite, ab hier holt die Seite selbst nach. So
+// bleibt das Dashboard ohne JS lesbar und mit JS vollständig durchblätterbar.
+const TZ = '${settings().timezone}';
+const stamp = new Intl.DateTimeFormat('en-GB',
+  { timeZone: TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const t = (ts) => (ts ? stamp.format(new Date(ts)) : '—');
+const esc = (v) => String(v === null || v === undefined ? '' : v)
+  .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+function pager(opts) {
+  const root = el(opts.id);
+  if (!root) return null;
+  const body = el(opts.rows);
+  const part = (role) => root.querySelector('[data-role="' + role + '"]');
+  const state = { offset: 0, limit: 25, filter: 'all', q: '' };
+  let debounce = null;
+
+  // Beim Blättern, Filtern oder Suchen darf der Auto-Reload nicht dazwischenfahren.
+  const busy = () => state.offset > 0 || state.filter !== 'all' || state.q !== '';
+
+  async function load() {
+    const url = opts.url + '?limit=' + state.limit + '&offset=' + state.offset
+      + '&' + opts.filterParam + '=' + encodeURIComponent(state.filter)
+      + '&q=' + encodeURIComponent(state.q);
+    let d;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      d = await res.json();
+    } catch (e) {
+      part('count').textContent = 'Fehler: ' + e.message;
+      return;
+    }
+    body.innerHTML = d.rows.length ? d.rows.map(opts.row).join('') : opts.empty;
+    const from = d.total === 0 ? 0 : d.offset + 1;
+    const to = Math.min(d.total, d.offset + d.rows.length);
+    part('count').textContent = from + '–' + to + ' von ' + d.total;
+    part('first').disabled = d.offset === 0;
+    part('prev').disabled = d.offset === 0;
+    part('next').disabled = d.offset + d.rows.length >= d.total;
+  }
+
+  part('next').onclick = () => { state.offset += state.limit; load(); };
+  part('prev').onclick = () => { state.offset = Math.max(0, state.offset - state.limit); load(); };
+  part('first').onclick = () => { state.offset = 0; load(); };
+  part('size').onchange = () => {
+    state.limit = parseInt(part('size').value, 10) || 25;
+    state.offset = 0;
+    load();
+  };
+  part('filter').onchange = () => { state.filter = part('filter').value; state.offset = 0; load(); };
+  part('q').oninput = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => { state.q = part('q').value.trim(); state.offset = 0; load(); }, 350);
+  };
+  return { busy: busy, load: load };
+}
+
+const sendPager = pager({
+  id: 'sendpager', rows: 'sendrows', url: '/api/sends', filterParam: 'filter',
+  empty: '<tr><td colspan="5" class="dim">Nichts gefunden.</td></tr>',
+  row: (r) => '<tr><td class="mono">' + t(r.sent_at) + '</td><td>'
+    + esc(r.first_name || r.contact_id) + '</td><td class="mono" title="' + esc(r.body) + '">' + esc(r.variant_id)
+    + '</td><td>' + r.step + '</td><td>'
+    + (r.error ? '<span class="bad">Fehler</span>'
+      : r.replied ? '<span class="ok">ja</span>' : '<span class="dim">—</span>')
+    + '</td></tr>',
+});
+
+const logPager = pager({
+  id: 'logpager', rows: 'logrows', url: '/api/events', filterParam: 'level',
+  empty: '<tr><td colspan="3" class="dim">Nichts gefunden.</td></tr>',
+  row: (e) => '<tr><td class="mono">' + t(e.at) + '</td><td class="'
+    + (e.level === 'error' ? 'bad' : e.level === 'warn' ? 'warn' : 'dim') + '">'
+    + esc(e.level) + '</td><td>' + esc(e.message) + '</td></tr>',
+});
+
+const pagers = [sendPager, logPager].filter(Boolean);
+setInterval(() => {
+  const tag = document.activeElement ? document.activeElement.tagName : '';
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (pagers.some((p) => p.busy())) return;
+  location.reload();
+}, 20000);
 ` : ''}
 </script>
 </body></html>`;
