@@ -1,6 +1,6 @@
 {
   "name": "wa-engine-cold-contacts",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Rotating SMS outreach for GoHighLevel — message pool, paced sending, reply tracking",
   "type": "module",
   "main": "src/index.js",
@@ -11,7 +11,7 @@
     "start": "node src/index.js",
     "import": "node scripts/import-contacts.js",
     "simulate": "node scripts/simulate.js",
-    "test": "node test/settings.test.mjs && node test/guards.test.mjs && node test/audience.test.mjs && node test/generate.test.mjs"
+    "test": "node test/settings.test.mjs && node test/guards.test.mjs && node test/history.test.mjs && node test/audience.test.mjs && node test/generate.test.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
